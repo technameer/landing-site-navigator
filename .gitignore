@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# virtualenv lives in the project root
+/bin/
+/lib/
+/lib64/
+/include/
+/share/
+/pyvenv.cfg
+
+# data: never commit the 2.6 GB terrain or the kernels
+*.tif
+*.tiff
+*.bsp
+*.bpc
+*.tls
+*.tf
+*.tgz
+
+# generated output
+*.npy
+dem_preview.png
+skyline_*.png
+
+# editors / os
+.DS_Store
+.vscode/
+.idea/
+
+# the README screenshot is deliberately tracked
+!docs/*.png
