@@ -64,8 +64,11 @@
 <main>
   <section class="map-panel">
     <canvas id="map"></canvas>
+    <canvas id="map3d" hidden></canvas>
 
     <div class="map-tools">
+      <button id="view-3d" title="Switch between the 2D map and the 3D globe">3D</button>
+      <button id="recenter" title="Back to the lunar south pole">⌖ Recenter</button>
       <button id="fit-region" title="Zoom to this site's regions">Region</button>
       <button id="fit-map" title="Zoom to the whole terrain file">Whole map</button>
     </div>
@@ -291,6 +294,9 @@
   </div>
 </div>
 
+<script type="importmap">
+  { "imports": { "three": "/vendor/three.module.js" } }
+</script>
 <script src="app.js"></script>
 </body>
 </html>

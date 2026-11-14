@@ -28,6 +28,19 @@ KERNELS = {
 
 FRAME = "MOON_ME_DE421"  # the frame Product 90 registers its DEMs in
 
+# Optional whole-Moon texture for the zoomed-out view (equirectangular,
+# longitude -180..180, latitude +90 at the top row). Fetched once with
+# scripts/fetch_globe.py; the app works fine without it.
+GLOBE_TEXTURE = "moon_global.jpg"
+
+
+def find_globe_texture() -> Path | None:
+    """Path to the global texture, or None when it has not been downloaded."""
+    for p in _candidates("LUNAR_GLOBE", GLOBE_TEXTURE, []):
+        if p.is_file():
+            return p
+    return None
+
 
 def _candidates(env: str, filename: str, extra: list[Path]) -> list[Path]:
     out: list[Path] = []

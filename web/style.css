@@ -200,13 +200,19 @@ main {
   background: #08090b;
 }
 
-#map {
+#map, #map3d {
   display: block;
   width: 100%;
   height: 100%;
   cursor: crosshair;
 }
+#map3d { cursor: grab; }
 #map.dragging { cursor: grabbing; }
+/* display:block above beats the UA's [hidden] rule, so hide explicitly */
+#map[hidden],
+#map3d[hidden] {
+  display: none;
+}
 
 .map-tools {
   position: absolute;
@@ -216,6 +222,13 @@ main {
   gap: 6px;
 }
 .map-tools button { height: 28px; padding: 0 10px; font-size: 12px; background: #12151bcc; backdrop-filter: blur(4px); }
+.map-tools button.active {
+  background: var(--sun);
+  border-color: var(--sun);
+  color: #0b0d10;
+  font-weight: 600;
+}
+.map-tools button:active { transform: translateY(1px); }
 
 .map-legend {
   position: absolute;

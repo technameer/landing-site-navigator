@@ -23,7 +23,7 @@ import traceback
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
-from lunar import config, ephemeris, sites
+from lunar import config, ephemeris, globe as globe_mod, sites
 from lunar.dem import terrain
 
 app = Flask(__name__, static_folder=None)
@@ -101,6 +101,16 @@ def api_status():
     if not available:
         warnings.append("no SiteXX_ROIs.tgz found - the map will have no regions")
 
+    gp = config.find_globe_texture()
+    globe_info: dict = {"available": gp is not None, "path": str(gp) if gp else None}
+    if gp:
+        globe_info["bytes"] = gp.stat().st_size
+    else:
+        warnings.append(
+            "no global Moon texture - the zoomed-out view is plain grey; "
+            "run scripts/fetch_globe.py once to add it"
+        )
+
     try:
         lo, hi = ephemeris.coverage()
         coverage = {"start": ephemeris.et_to_utc(lo)[:10], "end": ephemeris.et_to_utc(hi)[:10]}
@@ -124,6 +134,7 @@ def api_status():
         },
         "kernels": kernels,
         "frame": config.FRAME,
+        "globe": globe_info,
         "coverage": coverage,
         "sites": [x.as_dict(with_rings=False) for x in sites.catalogue()],
         "warnings": warnings,
@@ -167,8 +178,8 @@ def api_raster():
     cx = _num("cx", 0.0, -1e9, 1e9)
     cy = _num("cy", 0.0, -1e9, 1e9)
     span = _num("span", 600_000.0, 200.0, 1e6)
-    w = int(_num("w", 900, 64, 1600))
-    h = int(_num("h", 700, 64, 1600))
+    w = int(_num("w", 900, 64, 2048))
+    h = int(_num("h", 700, 64, 2048))
     sun_az = _num("sun_az", 315.0, 0.0, 360.0)
     sun_el = _num("sun_el", 35.0, -90.0, 90.0)
 
@@ -178,6 +189,53 @@ def api_raster():
     resp = send_file(io.BytesIO(png), mimetype="image/png", max_age=3600)
     resp.headers["X-BBox"] = ",".join(f"{v:.1f}" for v in bbox)
     resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+@app.get("/api/globe")
+def api_globe():
+    """Whole-Moon view for zoomed-out map spans.
+
+    Same X-BBox contract as /api/raster; X-Sun-Subpoint and X-Earth-Subpoint
+    additionally give "lat,lon" pairs for the labelled markers.
+    """
+    t = terrain()
+    g = globe_mod.globe()
+    if not g.available():
+        raise BadRequest("global Moon texture not found - run scripts/fetch_globe.py once")
+    cx = _num("cx", 0.0, -1e9, 1e9)
+    cy = _num("cy", 0.0, -1e9, 1e9)
+    span = _num("span", 8_000_000.0, 200.0, 12e6)
+    w = int(_num("w", 1200, 64, 2048))
+    h = int(_num("h", 900, 64, 2048))
+    t_iso = request.args.get("t") or "2026-11-14T00:00:00"
+    sun_az = _num("sun_az", 315.0, 0.0, 360.0)
+    sun_el = _num("sun_el", 35.0, -90.0, 90.0)
+    try:
+        sun = ephemeris.body_subpoint("SUN", t_iso)
+        earth = ephemeris.body_subpoint("EARTH", t_iso)
+    except Exception:
+        sun, earth = (0.0, 0.0), (0.0, 0.0)
+    png, bbox = g.render(
+        round(cx, 1), round(cy, 1), round(span, 1), w, h, sun, earth,
+        dem=t, sun_az=round(sun_az, 1), sun_el=round(sun_el, 1),
+    )
+    resp = send_file(io.BytesIO(png), mimetype="image/png", max_age=3600)
+    resp.headers["X-BBox"] = ",".join(f"{v:.1f}" for v in bbox)
+    resp.headers["X-Sun-Subpoint"] = f"{sun[0]:.4f},{sun[1]:.4f}"
+    resp.headers["X-Earth-Subpoint"] = f"{earth[0]:.4f},{earth[1]:.4f}"
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+@app.get("/api/globe-texture")
+def api_globe_texture():
+    """The global Moon texture for the 3D view, or 404 when not downloaded."""
+    gp = config.find_globe_texture()
+    if gp is None:
+        raise BadRequest("global Moon texture not found - run scripts/fetch_globe.py once")
+    resp = send_file(gp, mimetype="image/jpeg", max_age=86400)
+    resp.headers["Cache-Control"] = "public, max-age=86400"
     return resp
 
 

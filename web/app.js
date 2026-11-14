@@ -38,12 +38,13 @@ const state = {
   roi: null,
   observer: null,
   view: { cx: 0, cy: 0, span: 6000 },
-  raster: { img: null, bbox: null, key: "", url: null },
+  raster: { img: null, bbox: null, key: "", url: null, globe: false, sub: null },
   skyline: null,
   eph: null,
   hover: null,
   busy: false,
   stale: true,
+  view3d: false,
   scenarios: [],
   params: { start: "2026-11-14T00:00:00", hours: 24, step_min: 10, mast: 2, maxdist: 12000 },
 };
@@ -222,23 +223,45 @@ function scheduleRaster(delay = 140) {
 }
 
 let rasterToken = 0;
+function globeMode() {
+  const b = state.status?.dem?.bounds;
+  return b ? state.view.span > (b.right - b.left) * 1.05 : false;
+}
+
 async function fetchRaster() {
   const { W, H } = mapSize();
   if (W < 8 || H < 8) return;
-  const w = clamp(Math.round(W), 64, 1200);
-  const h = clamp(Math.round((w * H) / W), 64, 1200);
+  const d = dpr();
+  const globe = globeMode();
+  const w = clamp(Math.round(W * d), 64, 2048);
+  const h = clamp(Math.round((w * H) / W), 64, 2048);
   const v = state.view;
-  const key = [Math.round(v.cx), Math.round(v.cy), Math.round(v.span), w, h].join(",");
+  // the selected date matters in globe mode: it sets the day/night line
+  const tHour = globe ? Math.round(parseUTC(state.params.start) / 36e5) : 0;
+  const key = [globe ? "g" : "r", Math.round(v.cx), Math.round(v.cy),
+               Math.round(v.span), w, h, tHour].join(",");
   if (key === state.raster.key) return;
 
   const token = ++rasterToken;
   const q = new URLSearchParams({
     cx: v.cx.toFixed(1), cy: v.cy.toFixed(1), span: v.span.toFixed(1), w, h,
   });
+  if (globe) {
+    q.set("t", state.params.start);
+    const eph = state.eph;
+    if (eph && Array.isArray(eph.sun_az) && eph.sun_az.length) {
+      q.set("sun_az", eph.sun_az[0].toFixed(1));
+      q.set("sun_el", eph.sun_el[0].toFixed(1));
+    }
+  }
   try {
-    const resp = await fetch("/api/raster?" + q);
+    const resp = await fetch((globe ? "/api/globe?" : "/api/raster?") + q);
     if (!resp.ok) throw new Error("raster " + resp.status);
     const bbox = (resp.headers.get("X-BBox") || "").split(",").map(Number);
+    const sub = {
+      sun: (resp.headers.get("X-Sun-Subpoint") || "").split(",").map(Number),
+      earth: (resp.headers.get("X-Earth-Subpoint") || "").split(",").map(Number),
+    };
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
     const img = new Image();
@@ -252,7 +275,9 @@ async function fetchRaster() {
       return;
     }
     if (state.raster.url) URL.revokeObjectURL(state.raster.url);
-    state.raster = { img, bbox, key, url };
+    state.raster = { img, bbox, key, url, globe, sub };
+    // feed the 3D view, if it exists, the fresh body sub-points
+    if (globe3d && sub.sun.length === 2 && sub.earth.length === 2) globe3d.update(sub.sun, sub.earth);
     drawMap();
   } catch (err) {
     console.warn("raster:", err.message);
@@ -276,6 +301,9 @@ function drawMap() {
     mctx.imageSmoothingQuality = "high";
     mctx.drawImage(r.img, p0.x, p0.y, p1.x - p0.x, p1.y - p0.y);
   }
+
+  // labelled Sun/Earth markers, only in the zoomed-out globe view
+  if (r.img && r.globe && r.sub) drawBodies(W, H, r.sub);
 
   // regions
   const s = pxPerM();
@@ -346,7 +374,61 @@ function drawMap() {
   mctx.font = "10.5px ui-monospace, monospace";
   mctx.textAlign = "right";
   mctx.fillStyle = "rgba(160,170,186,0.55)";
-  mctx.fillText("0°E ↑   90°E →", W - 12, H - 44);
+  if (state.raster.globe) {
+    mctx.fillText("southern hemisphere · global texture · zoom in for terrain detail", W - 12, H - 44);
+  } else {
+    mctx.fillText("0°E ↑   90°E →", W - 12, H - 44);
+  }
+}
+
+function bodyMapXY(subLL) {
+  // south-polar stereographic forward projection of a lat/lon sub-point
+  const rho = 2 * R_MOON * Math.tan(Math.PI / 4 + (subLL[0] * D2R) / 2);
+  return { x: rho * Math.sin(subLL[1] * D2R), y: rho * Math.cos(subLL[1] * D2R) };
+}
+
+function drawBodies(W, H, sub) {
+  const bodies = [
+    { name: "Sun", ll: sub.sun, color: C.sun },
+    { name: "Earth", ll: sub.earth, color: C.earth },
+  ];
+  for (const b of bodies) {
+    if (!Array.isArray(b.ll) || b.ll.length !== 2 || !Number.isFinite(b.ll[0])) continue;
+    const m = bodyMapXY(b.ll);
+    let p = worldToScreen(m.x, m.y);
+    const margin = 34;
+    const inside = p.x > margin && p.x < W - margin && p.y > margin && p.y < H - margin;
+    if (!inside) {
+      // pin to the frame edge along the same bearing from the view centre
+      const c0 = { x: W / 2, y: H / 2 };
+      const dx = p.x - c0.x;
+      const dy = p.y - c0.y;
+      const kx = dx === 0 ? Infinity : (W / 2 - margin) / Math.abs(dx);
+      const ky = dy === 0 ? Infinity : (H / 2 - margin) / Math.abs(dy);
+      const k = Math.min(kx, ky);
+      p = { x: c0.x + dx * k, y: c0.y + dy * k };
+    }
+    mctx.save();
+    mctx.shadowColor = b.color;
+    mctx.shadowBlur = inside ? 14 : 6;
+    mctx.fillStyle = b.color;
+    mctx.beginPath();
+    mctx.arc(p.x, p.y, inside ? 8 : 5, 0, Math.PI * 2);
+    mctx.fill();
+    mctx.restore();
+    mctx.strokeStyle = b.color;
+    mctx.lineWidth = 1.2;
+    mctx.beginPath();
+    mctx.arc(p.x, p.y, inside ? 12 : 8, 0, Math.PI * 2);
+    mctx.stroke();
+    mctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
+    mctx.textAlign = "center";
+    mctx.textBaseline = "bottom";
+    mctx.fillStyle = "rgba(8,9,11,0.9)"; // readability against the lit surface
+    mctx.fillText(b.name, p.x + 1, p.y - 14);
+    mctx.fillStyle = b.color;
+    mctx.fillText(b.name, p.x, p.y - 15);
+  }
 }
 
 function drawScaleBar(W, H, s) {
@@ -419,7 +501,7 @@ mapCanvas.addEventListener(
     const my = e.clientY - rect.top;
     const before = screenToWorld(mx, my);
     const factor = Math.exp(e.deltaY * 0.0012);
-    state.view.span = clamp(state.view.span * factor, 600, 640000);
+    state.view.span = clamp(state.view.span * factor, 600, 8_000_000);
     const after = screenToWorld(mx, my);
     state.view.cx += before.x - after.x;
     state.view.cy += before.y - after.y;
@@ -1172,6 +1254,7 @@ async function runAnalysis() {
 
     state.skyline = sky;
     state.eph = eph;
+    if (globeMode()) scheduleRaster();
     state.stale = false;
     state.hover = null;
 
@@ -1216,7 +1299,7 @@ function fitRegion() {
   state.view.cx = (minX + maxX) / 2;
   state.view.cy = (minY + maxY) / 2;
   // 20 m/px data: below ~4 km the picture is pure upscaling
-  state.view.span = clamp(Math.max(spanForW, spanForH, 4000), 600, 640000);
+  state.view.span = clamp(Math.max(spanForW, spanForH, 4000), 600, 8_000_000);
   clampView();
   drawMap();
   scheduleRaster(0);
@@ -1323,6 +1406,74 @@ function bindControls() {
 
   $("#fit-region").addEventListener("click", fitRegion);
   $("#fit-map").addEventListener("click", fitMap);
+
+  $("#view-3d").addEventListener("click", () => {
+    state.view3d = !state.view3d;
+    if (state.view3d) {
+      // first switch loads the module on demand; if the vendor files were
+      // never downloaded the import throws and we stay in a working 2D view
+      init3D().catch((err) => {
+        console.warn("3d:", err);
+        state.view3d = false;
+        setPill("3D unavailable (vendor files missing?)", "warn");
+        applyViewMode(); // un-highlight the button, keep the 2D view
+      });
+    } else {
+      applyViewMode();
+    }
+  });
+
+  $("#recenter").addEventListener("click", () => {
+    if (state.view3d) {
+      globe3d.recenter();
+      return;
+    }
+    state.view.cx = 0;
+    state.view.cy = 0;
+    if (state.view.span > 8_000_000 || state.view.span < 608_000) state.view.span = 608_000;
+    clampView();
+    drawMap();
+    scheduleRaster();
+  });
+}
+
+/* ------------------------------------------------------------ 3D view mode */
+
+let globe3d = null;
+
+async function init3D() {
+  if (globe3d) {
+    // module already loaded and constructed: just switch the view back on
+    applyViewMode();
+    return;
+  }
+  const canvas = $("#map3d");
+  const mod = await import("./globe3d.js");
+  globe3d = new mod.Globe3D(canvas);
+  const sub = state.raster.sub;
+  const haveSub = sub && sub.sun.length === 2 && Number.isFinite(sub.sun[0]) &&
+                  sub.earth.length === 2 && Number.isFinite(sub.earth[0]);
+  if (haveSub) {
+    globe3d.update(sub.sun, sub.earth);
+  } else {
+    // never shown the globe view yet: get real sub-points for this date
+    globe3d.refreshFromServer(state.params.start).catch((e) =>
+      console.warn("3d: sub-points unavailable:", e.message)
+    );
+  }
+  applyViewMode();
+}
+
+function applyViewMode() {
+  const map2d = $("#map"), map3d = $("#map3d");
+  const on = state.view3d;
+  map2d.hidden = on;
+  map3d.hidden = !on;
+  $("#view-3d").classList.toggle("active", on);
+  if (on) { globe3d.show(); globe3d.recenter(); } else { globe3d && globe3d.hide(); }
+  // controls that belong to the 2D map only
+  $("#fit-region").disabled = on;
+  $("#fit-map").disabled = on;
 }
 
 function bindCoordForm() {
@@ -1503,6 +1654,7 @@ async function init() {
     clearTimeout(window.__rz);
     window.__rz = setTimeout(() => {
       resizeMap();
+      if (globe3d && state.view3d) globe3d.resize();
       drawSkyline();
       drawTimeline();
     }, 120);

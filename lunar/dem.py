@@ -69,7 +69,10 @@ class Terrain:
             win = Window(c0, r0, 2, 2)
             if r0 + 2 > ds.height or c0 + 2 > ds.width:
                 win = Window(max(0, ds.width - 2), max(0, ds.height - 2), 2, 2)
-            a = ds.read(1, window=win, masked=True).astype("float64").filled(np.nan)
+            try:
+                a = ds.read(1, window=win, masked=True).astype("float64").filled(np.nan)
+            except Exception:  # noqa: BLE001 - a corrupt tile must read as "no data"
+                return None
         if a.size < 4 or not np.isfinite(a).all():
             v = a[np.isfinite(a)]
             return float(v[0]) if v.size else None
@@ -95,40 +98,48 @@ class Terrain:
         col1 = min(self.width, int(math.ceil(win.col_off + win.width)))
         row1 = min(self.height, int(math.ceil(win.row_off + win.height)))
         with rasterio.open(self.path) as ds:
-            arr = ds.read(
-                1,
-                window=Window(col0, row0, col1 - col0, row1 - row0),
-                out_shape=(px_h, px_w),
-                resampling=Resampling.bilinear,
-                masked=True,
-            ).astype("float32").filled(np.nan)
+            arr = self._read_bands_safe(
+                ds, Window(col0, row0, col1 - col0, row1 - row0), (px_h, px_w)
+            )
         return arr, (left, bottom, right, top)
 
-    # -------------------------------------------------------------- hillshade
-    @lru_cache(maxsize=48)
-    def hillshade_png(
-        self,
-        cx: float,
-        cy: float,
-        span_m: float,
-        px_w: int,
-        px_h: int,
-        sun_az: float = 315.0,
-        sun_el: float = 35.0,
-    ) -> tuple[bytes, tuple[float, float, float, float]]:
-        """Greyscale-with-height-tint hillshade of one map view, as PNG bytes."""
-        span_y = span_m * px_h / px_w
-        arr, bbox = self._read_window(
-            cx - span_m / 2, cy - span_y / 2, cx + span_m / 2, cy + span_y / 2, px_w, px_h
-        )
-        # metres per output pixel, used to get slopes right after decimation
-        dx = (bbox[2] - bbox[0]) / px_w
-        dy = (bbox[3] - bbox[1]) / px_h
+    def _read_bands_safe(self, ds, win, out_shape):
+        """Read one band, tolerating corrupt tiles.
 
-        z = arr.astype("float64")
+        The DEM is read in horizontal strips; a strip whose tiles fail zlib
+        decoding (one bad tile was observed in the published file) becomes
+        NaN instead of failing the whole request. The skyline already treats
+        NaN as 'no data here', so a lost strip only thins the ray casting.
+        """
+        rows_total = int(win.height)
+        out = np.full(out_shape, np.nan, dtype="float32")
+        strip = max(1, int(rows_total * 64 / out_shape[0]))  # ~64 output rows each
+        r = 0
+        while r < rows_total:
+            h = min(strip, rows_total - r)
+            sub = Window(win.col_off, win.row_off + r, win.width, h)
+            scale = out_shape[0] / rows_total
+            sub_out = (max(1, round(h * scale)), out_shape[1])
+            try:
+                piece = ds.read(
+                    1, window=sub, out_shape=sub_out,
+                    resampling=Resampling.bilinear, masked=True,
+                ).astype("float32").filled(np.nan)
+                row0 = int(round(r * scale))
+                row1 = min(out_shape[0], int(round((r + h) * scale)))
+                out[row0:row1] = piece[: row1 - row0]
+            except Exception:  # noqa: BLE001 - a corrupt tile must not kill the request
+                pass
+            r += h
+        return out
+
+    def shade_rgb(self, z: np.ndarray, dx: float, dy: float,
+                  sun_az: float = 315.0, sun_el: float = 35.0) -> np.ndarray:
+        """Lambert-shaded, height-tinted RGB (uint8, HxWx3) from a height array."""
+        z = np.asarray(z, dtype="float64")
         finite = np.isfinite(z)
         if not finite.any():
-            z[:] = 0.0
+            z = np.zeros_like(z)
         else:
             z = np.where(finite, z, float(np.nanmedian(z)))
         gy, gx = np.gradient(z, dy, dx)  # row spacing, column spacing
@@ -147,6 +158,38 @@ class Terrain:
         base = np.stack([58 + 120 * t, 60 + 120 * t, 66 + 118 * t], axis=-1)
         rgb = np.clip(base * (0.30 + 0.85 * shade[..., None]), 0, 255).astype("uint8")
         rgb[~finite] = (12, 12, 14)
+        return rgb
+
+    # -------------------------------------------------------------- hillshade
+    @lru_cache(maxsize=48)
+    def hillshade_png(
+        self,
+        cx: float,
+        cy: float,
+        span_m: float,
+        px_w: int,
+        px_h: int,
+        sun_az: float = 315.0,
+        sun_el: float = 35.0,
+    ) -> tuple[bytes, tuple[float, float, float, float]]:
+        """Greyscale-with-height-tint hillshade of one map view, as PNG bytes."""
+        span_y = span_m * px_h / px_w
+
+        # never upscale past native resolution: the DEM has 20 m pixels,
+        # so a finer request would only blur what is already there
+        native_w = max(2, int(span_m / self.res))
+        if px_w > native_w:
+            px_h = max(2, round(px_h * native_w / px_w))
+            px_w = native_w
+            span_y = span_m * px_h / px_w
+
+        arr, bbox = self._read_window(
+            cx - span_m / 2, cy - span_y / 2, cx + span_m / 2, cy + span_y / 2, px_w, px_h
+        )
+        # metres per output pixel, used to get slopes right after decimation
+        dx = (bbox[2] - bbox[0]) / px_w
+        dy = (bbox[3] - bbox[1]) / px_h
+        rgb = self.shade_rgb(arr, dx, dy, sun_az, sun_el)
 
         from PIL import Image
 
@@ -182,7 +225,7 @@ class Terrain:
         row1 = min(self.height, int(row) + pad + 1)
         win = Window(col0, row0, col1 - col0, row1 - row0)
         with rasterio.open(self.path) as ds:
-            data = ds.read(1, window=win, masked=True).astype("float64").filled(np.nan)
+            data = self._read_bands_safe(ds, win, (win.height, win.width)).astype("float64")
             inv = ~ds.window_transform(win)
 
         h_site = _bilinear(data, row - row0, col - col0)
@@ -242,7 +285,7 @@ class Terrain:
         row1 = min(self.height, int(row) + pad + 1)
         win = Window(col0, row0, col1 - col0, row1 - row0)
         with rasterio.open(self.path) as ds:
-            data = ds.read(1, window=win, masked=True).astype("float64").filled(np.nan)
+            data = self._read_bands_safe(ds, win, (win.height, win.width)).astype("float64")
             inv = ~ds.window_transform(win)
 
         h_site = _bilinear(data, row - row0, col - col0)

@@ -25,6 +25,7 @@ cd ~/Desktop/app-space
 
 ./bin/python scripts/preflight.py     # are the data files here and intact?
 ./bin/python scripts/selfcheck.py     # do the numbers still make sense?
+./bin/python scripts/fetch_globe.py   # once: texture + local 3D engine files
 ./bin/python server.py                # http://127.0.0.1:8000
 ```
 
@@ -44,7 +45,13 @@ python3 -m venv .
 **Map.** South-polar stereographic view of the terrain, with the Product 78
 region-of-interest polygons on top. Drag to pan, scroll to zoom, click anywhere
 to move the observer, or type a latitude/longitude in the Site card and press
-**Go**. The white crosshair is the observer.
+**Go**. The white crosshair is the observer. Zoom all the way out and the view
+grows into the whole southern hemisphere: real DEM terrain at the pole, an LROC
+WAC global texture elsewhere, the actual day/night line for the selected date,
+and labelled Sun and Earth markers at their true sub-points. A **3D** button
+swaps the flat map for a spinning globe with the Sun and Earth placed in space
+at their true directions for the selected date; **⌖ Recenter** returns either
+view to the south pole.
 
 **Scenarios.** Press **Save current** to remember a site + date + settings, then
 change something and save again. **Compare** opens a side-by-side table of
@@ -215,12 +222,14 @@ lunar/
   dem.py                  terrain: heights, hillshade, skyline, profiles
   roi.py                  dependency-free shapefile reader for the ROI archives
   ephemeris.py            SPICE: Sun/Earth elevation, lit/linked timeline
+  globe.py                whole-Moon texture + day/night for zoomed-out views
   sites.py                site catalogue (names from PGDA Product 78)
 web/
   index.html, style.css, app.js     the interface (no frameworks)
 scripts/
   preflight.py            check the data files
   selfcheck.py            check the physics and the geometry
+  fetch_globe.py          one-time download of the global Moon texture
 docs/screenshot.png
 explore_datasets.py       earlier standalone CLI, kept for reference
 ```
@@ -277,6 +286,8 @@ same thing as a Horizons comparison.
   `localStorage` on this machine and hold summary numbers, not the full curves.
 - **Custom coordinates are limited to the DEM footprint** (about 80°S–90°S).
   Points outside that square are rejected with a message.
+- **The global texture is context, not data.** It is aligned in the mean-Earth frame and rendered at globe scale; the day/night line on it is real, but landing decisions still come from the DEM layer.
+- **The 3D globe is context, not analysis.** It shows the global texture and body directions; horizon, sunlight and link answers still come from the DEM layer.
 
 ---
 

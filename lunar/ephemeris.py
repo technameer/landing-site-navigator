@@ -15,6 +15,7 @@ must sit at about +/-1.5 degrees, because that is the Moon's axial tilt. It does
 """
 from __future__ import annotations
 
+import math
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -72,6 +73,22 @@ def body_vectors(body: str, ets: np.ndarray) -> np.ndarray:
     elif pos.shape[0] != 3:
         pos = pos.T
     return pos * 1000.0
+
+
+def body_subpoint(body: str, iso: str) -> tuple[float, float]:
+    """Latitude/longitude on the 1737.4 km sphere directly under `body`.
+
+    That is the point where the body would appear at the zenith, in the
+    MOON_ME_DE421 frame - the anchor for the globe view's Sun/Earth markers.
+    """
+    import spiceypy as sp
+
+    et = utc_to_et(iso)
+    with _lock:
+        pos, _ = sp.spkpos(body, et, FRAME, "LT+S", "MOON")
+    v = np.asarray(pos, dtype=float) * 1000.0
+    r = float(np.linalg.norm(v))
+    return math.degrees(math.asin(v[2] / r)), math.degrees(math.atan2(v[1], v[0]))
 
 
 def coverage() -> tuple[float, float]:
