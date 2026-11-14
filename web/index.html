@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunar Landing Site Navigator</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d0f13'/%3E%3Ccircle cx='16' cy='16' r='8' fill='%23dfe3ea'/%3E%3Ccircle cx='12' cy='13' r='1.6' fill='%23a9b1c0'/%3E%3Ccircle cx='19' cy='18' r='2.1' fill='%23a9b1c0'/%3E%3Ccircle cx='17' cy='11' r='1.1' fill='%23a9b1c0'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="brand-text">
+      <h1>Lunar Landing Site Navigator</h1>
+      <p class="tagline">Pick a spot near the Moon's south pole. See what the ground hides, and when it gets sunlight and a link to Earth.</p>
+    </div>
+    <span id="status-pill" class="pill pill-wait" role="status" aria-live="polite">loading…</span>
+    <button id="help-open" class="help-btn" title="Open the guided explanation">? How to use</button>
+  </div>
+
+  <div class="controls">
+    <label title="Which set of landing regions to look at. Each site is a named area from NASA's Product 78 catalogue.">Site
+      <select id="site-select"></select>
+    </label>
+    <label title="The landing region inside the site. Choosing one moves the observer to its centre.">Region
+      <select id="roi-select"></select>
+    </label>
+    <label title="UTC date and time the simulation starts.">Start (UTC)
+      <input id="start" type="datetime-local" value="2026-11-14T00:00">
+    </label>
+    <label title="How long to simulate. One lunar day is about 29.6 Earth days.">Window
+      <select id="hours">
+        <option value="24">1 Earth day</option>
+        <option value="168">7 Earth days</option>
+        <option value="710" selected>1 lunar day (29.6 d)</option>
+      </select>
+    </label>
+    <label title="Time between samples. Smaller steps give smoother curves but take longer.">Step
+      <select id="step">
+        <option value="5">5 min</option>
+        <option value="10" selected>10 min</option>
+        <option value="30">30 min</option>
+        <option value="60">1 h</option>
+      </select>
+    </label>
+    <label title="Height of the observer (or antenna) above the ground. Raise it to see over nearby ridges.">Mast (m)
+      <input id="mast" type="number" value="2" min="0" max="50" step="0.5">
+    </label>
+    <label title="How far away terrain is considered when building the horizon. Distant mountains matter at 25-50 km.">Horizon range
+      <select id="maxdist">
+        <option value="5000">5 km</option>
+        <option value="12000" selected>12 km</option>
+        <option value="25000">25 km</option>
+        <option value="50000">50 km</option>
+      </select>
+    </label>
+    <button id="run" class="primary" title="Recalculate the horizon and the Sun/Earth timeline with the current settings.">Recompute</button>
+  </div>
+</header>
+
+<div id="progress" class="progress" aria-hidden="true" hidden><div class="progress-bar"></div></div>
+
+<main>
+  <section class="map-panel">
+    <canvas id="map"></canvas>
+
+    <div class="map-tools">
+      <button id="fit-region" title="Zoom to this site's regions">Region</button>
+      <button id="fit-map" title="Zoom to the whole terrain file">Whole map</button>
+    </div>
+
+    <div id="map-busy" class="map-busy" hidden><span class="spinner"></span> calculating…</div>
+
+    <div id="map-legend" class="map-legend">
+      <span><i class="sw sw-roi"></i> landing region</span>
+      <span><i class="sw sw-site"></i> observer</span>
+      <span id="cursor-readout" class="mono">—</span>
+    </div>
+
+    <div id="map-hint" class="map-hint">click the map to move the observer · drag to pan · scroll to zoom</div>
+  </section>
+
+  <aside>
+    <div class="card" id="card-site">
+      <h2>Site <span class="h2-sub">where you are standing</span></h2>
+      <div class="kv">
+        <div><dt title="The landing region containing the observer, or 'custom point' if you clicked outside one.">Region</dt><dd id="v-roi">—</dd></div>
+        <div><dt title="The named site group this region belongs to.">Parent site</dt><dd id="v-site">—</dd></div>
+        <div><dt title="Degrees from the lunar equator. Negative means south; -90 is the south pole.">Latitude</dt><dd id="v-lat" class="mono">—</dd></div>
+        <div><dt title="Degrees east or west of the Moon's prime meridian.">Longitude</dt><dd id="v-lon" class="mono">—</dd></div>
+        <div><dt title="Terrain height above the 1,737.4 km reference sphere, read from the LOLA DEM.">Ground height</dt><dd id="v-height" class="mono">—</dd></div>
+        <div><dt title="Area of the landing region polygon on the ground.">Region area</dt><dd id="v-area" class="mono">—</dd></div>
+        <div><dt title="x / y coordinates on the south-polar map, in metres from the pole.">Map position</dt><dd id="v-xy" class="mono">—</dd></div>
+        <div><dt title="Straight-line distance from the observer to the south pole (90°S).">Distance to pole</dt><dd id="v-pole" class="mono">—</dd></div>
+      </div>
+
+      <form id="coord-form" class="coord-form" autocomplete="off">
+        <span class="coord-title">Go to coordinates</span>
+        <label title="Latitude in degrees. South is negative, e.g. -89.44.">
+          <span>Lat °</span>
+          <input id="coord-lat" type="number" step="0.001" min="-90" max="0" placeholder="-89.44">
+        </label>
+        <label title="Longitude in degrees. East is positive, west is negative, e.g. -137.09.">
+          <span>Lon °</span>
+          <input id="coord-lon" type="number" step="0.001" min="-180" max="180" placeholder="-137.09">
+        </label>
+        <button type="submit" title="Move the observer to these coordinates">Go</button>
+      </form>
+      <p class="coord-hint">South is negative latitude · west is negative longitude</p>
+    </div>
+
+    <div class="card" id="card-compare">
+      <h2>Scenarios <span class="h2-sub">save and compare</span></h2>
+      <div class="compare-actions">
+        <button id="save-scenario" class="mini-btn" title="Remember the current site, date and results">Save current</button>
+        <button id="open-compare" class="mini-btn" disabled title="Open the side-by-side table">Compare</button>
+      </div>
+      <div id="scenario-list" class="scenario-list">
+        <p class="note muted">No saved scenarios yet. Set a site and date, then press “Save current”.</p>
+      </div>
+    </div>
+
+    <div class="card" id="card-horizon">
+      <h2>Terrain horizon <span class="h2-sub">what the ground hides</span></h2>
+      <canvas id="skyline" height="260"></canvas>
+      <div class="card-loading" hidden><span class="spinner"></span> calculating horizon…</div>
+      <div class="stats" id="skyline-stats"></div>
+      <p class="note" id="skyline-note"></p>
+    </div>
+
+    <div class="card" id="card-eph">
+      <h2>Sun &amp; Earth <span class="h2-sub">over the selected window</span></h2>
+      <div id="nowcast" class="nowcast"></div>
+      <canvas id="timeline" height="230"></canvas>
+      <div class="card-loading" hidden><span class="spinner"></span> calculating Sun &amp; Earth…</div>
+      <div class="legend">
+        <span><i class="sw sw-sun"></i> Sun elevation</span>
+        <span><i class="sw sw-earth"></i> Earth elevation</span>
+        <span><i class="sw sw-dash sw-sun-dash"></i> horizon, Sun path</span>
+        <span><i class="sw sw-dash sw-earth-dash"></i> horizon, Earth path</span>
+      </div>
+      <div class="stats" id="eph-stats"></div>
+      <div id="transitions" class="transitions"></div>
+      <p class="note muted" id="last-updated" role="status" aria-live="polite"></p>
+    </div>
+
+    <div class="card card-note">
+      <h2>Data</h2>
+      <p class="note" id="data-note">—</p>
+      <p class="note muted">
+        Heights are metres above the 1,737.4 km sphere. Frames: terrain
+        <span class="mono">MOON_ME_DE421</span>, ephemeris <span class="mono">DE421</span>.
+        Lighting uses the Sun's upper limb (radius 0.266°); Earth link needs the
+        disk above the horizon.
+      </p>
+    </div>
+  </aside>
+</main>
+
+<div id="tooltip" class="tooltip" hidden></div>
+
+<div id="help-modal" class="modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <div class="modal-head">
+      <h2 id="help-title">How to use this page</h2>
+      <button id="help-close" class="modal-close" title="Close (Esc)">×</button>
+    </div>
+    <div class="modal-body">
+      <p class="lead">
+        This page answers one question: <b>if a lander sat at this spot, would it get
+        sunlight and a radio link to Earth — and when?</b> Everything is computed from
+        two NASA datasets: the LOLA terrain map (heights) and the DE421 ephemeris
+        (Sun and Earth positions).
+      </p>
+
+      <h3>1 · Pick a place</h3>
+      <p>
+        Choose a <b>Site</b> and <b>Region</b> in the top bar, <b>click anywhere on
+        the map</b>, or type a latitude and longitude in the <b>Site</b> card and
+        press <b>Go</b>. The white crosshair is the observer. Drag to pan, scroll
+        to zoom. The outlined shapes are candidate landing regions from NASA's
+        Product 78 catalogue.
+      </p>
+      <p class="modal-hint">
+        Coordinates are signed: south is negative latitude, west is negative
+        longitude. Example: <span class="mono">-89.44, -137.09</span>.
+      </p>
+
+      <h3>2 · Read the Site card</h3>
+      <ul>
+        <li><b>Region</b> — the landing region containing the point, or “custom point”.</li>
+        <li><b>Parent site</b> — the named group, e.g. Site01 “Connecting ridge”.</li>
+        <li><b>Latitude / Longitude</b> — position on the Moon. Negative latitude is south; 90°S is the pole.</li>
+        <li><b>Ground height</b> — terrain elevation above the 1,737.4 km reference sphere, in metres.</li>
+        <li><b>Region area</b> — size of the landing region polygon.</li>
+        <li><b>Map position</b> — x / y on the south-polar map, in metres from the pole.</li>
+        <li><b>Distance to pole</b> — straight-line distance to 90°S.</li>
+        <li><b>Go to coordinates</b> — jump to any typed latitude/longitude inside the terrain file.</li>
+      </ul>
+
+      <h3>3 · Save and compare scenarios</h3>
+      <p>
+        Set up a site and date, then press <b>Save current</b> in the
+        <b>Scenarios</b> card. Change the site, date, window or mast, and save a
+        second scenario. Press <b>Compare</b> to open a side-by-side table of
+        sunlit time, Earth visibility, longest sunlit run, elevation ranges and
+        the next Sun/Earth event. Green marks the best value in each row.
+      </p>
+      <p>
+        Up to six scenarios are kept in your browser, so they survive a reload.
+        Use <b>Load</b> to return to one, or <b>×</b> to remove it.
+      </p>
+
+      <h3>4 · Read the Terrain horizon</h3>
+      <p>
+        This is a view looking straight up. The centre is the observer, the rim is
+        the horizon, and N/E/S/W show the compass. The shaded shape is
+        <b>how high the ground rises in each direction</b>, in degrees above level.
+        The 0° ring is flat ground; anything inside the shape is hidden behind terrain.
+      </p>
+      <ul>
+        <li><b>Highest obstacle</b> — the tallest ridge and the direction it lies in.</li>
+        <li><b>Mean horizon</b> — average ridge height all the way around.</li>
+        <li><b>Above Sun's max</b> — the share of directions where terrain is taller than the Sun ever gets. Above 0% means some ground never sees direct sunlight.</li>
+        <li><b>Observer height</b> — ground height plus the mast you set.</li>
+      </ul>
+      <p>
+        Why it matters: near the south pole the Sun never climbs much above 2°, so a
+        3° ridge can keep a site dark for a whole lunar day.
+      </p>
+
+      <h3>5 · Read the Sun &amp; Earth chart</h3>
+      <p>
+        The two boxes above the chart are the <b>now / next</b> summary: whether
+        the Sun and Earth are visible at the start of the window, their elevation,
+        and how long until the next sunset, sunrise, earthset or earthrise. If no
+        crossing happens inside the window, it says so.
+      </p>
+      <p>
+        Time runs left to right. Solid amber is the Sun's elevation; solid cyan is
+        the Earth's. The dashed line of the same colour is the terrain horizon in
+        the direction that body is currently in.
+        <b>When a solid line is above its dashed line, the body is visible. When it
+        drops below, terrain blocks it.</b> Pale amber bands mean sunlight; pale cyan
+        bands mean an Earth link. Hover the chart to read exact values at any moment.
+      </p>
+      <ul>
+        <li><b>Sunlit / Earth visible</b> — percentage of the window each one is visible.</li>
+        <li><b>Sunlit + linked</b> — percentage with both at the same time.</li>
+        <li><b>Longest sunlit run</b> — longest continuous stretch of light inside the window.</li>
+        <li><b>Sun / Earth elevation</b> — the lowest and highest angle reached.</li>
+        <li><b>Horizon crossings</b> — exact times the Sun or Earth rises above or sets behind terrain.</li>
+      </ul>
+
+      <h3>6 · Change the question</h3>
+      <ul>
+        <li><b>Start (UTC)</b> — when the simulation begins.</li>
+        <li><b>Window</b> — how long to simulate: 1 Earth day, 7 days, or one full lunar day (≈ 29.6 Earth days).</li>
+        <li><b>Step</b> — time between samples. Smaller is smoother, but slower.</li>
+        <li><b>Mast</b> — eye or antenna height above the ground. Raise it to see over nearby ridges.</li>
+        <li><b>Horizon range</b> — how far away terrain is considered. Distant massifs matter at 25–50 km.</li>
+      </ul>
+
+      <h3>Good first experiments</h3>
+      <ul>
+        <li>Set <b>Window</b> to “1 lunar day” and press <b>Recompute</b>: watch the Earth swing ±6° across the sky.</li>
+        <li>Set <b>Start</b> to <span class="mono">2027-03-01</span>: near the equinox the Sun actually rises and sets.</li>
+        <li>Raise <b>Mast</b> to 10 m: see how much horizon a taller antenna clears.</li>
+        <li>Click different regions: each one has a different horizon and a different answer.</li>
+        <li>Save the same site at two dates, press <b>Compare</b>, and see which date gives the better power/communication trade-off.</li>
+      </ul>
+
+      <p class="modal-foot">
+        Green numbers are favourable; amber numbers are worth a closer look.
+        A “—” means the value is still being calculated.
+      </p>
+    </div>
+  </div>
+</div>
+
+<div id="compare-modal" class="modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-panel modal-wide" role="dialog" aria-modal="true" aria-labelledby="compare-title">
+    <div class="modal-head">
+      <h2 id="compare-title">Scenario comparison</h2>
+      <button id="compare-close" class="modal-close" title="Close (Esc)">×</button>
+    </div>
+    <div class="modal-body" id="compare-body"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
