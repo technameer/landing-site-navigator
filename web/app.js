@@ -332,15 +332,6 @@ function drawMap() {
     const p1 = worldToScreen(r.bbox[2], r.bbox[1]);
     mctx.imageSmoothingEnabled = true;
     mctx.imageSmoothingQuality = "high";
-    // A zoom step leaves the old frame smaller than the new view until the
-    // server answers. Stretch it over the whole canvas first so the gap
-    // reads as blurry terrain rather than black bars.
-    const covers = p0.x <= 0 && p0.y <= 0 && p1.x >= W && p1.y >= H;
-    if (!covers) {
-      mctx.globalAlpha = 0.92;
-      mctx.drawImage(r.img, 0, 0, W, H);
-      mctx.globalAlpha = 1;
-    }
     mctx.drawImage(r.img, p0.x, p0.y, p1.x - p0.x, p1.y - p0.y);
   }
 
