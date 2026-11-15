@@ -249,8 +249,11 @@ async function fetchRaster() {
   const eph = state.eph;
   // while playing, the CURRENT step lights the scene: raster mode re-shades the
   // hillshade, globe mode also moves the day/night line to the step's time
-  const pb = playback.i !== null && eph && Array.isArray(eph.sun_az) && playback.i < eph.sun_az.length
-    ? playback.i : null;
+  // the bar position lights the scene: step 0 at rest, the scrub step
+  // when seeking. The generic 315/35 studio light washed the terrain
+  // out white; the real Sun is used as soon as we have it.
+  const pb = eph && Array.isArray(eph.sun_az) && eph.sun_az.length
+    ? Math.min(playback.i ?? 0, eph.sun_az.length - 1) : null;
   // the selected date matters in globe mode: it sets the day/night line
   let tHour = globe ? Math.round(parseUTC(state.params.start) / 36e5) : 0;
   if (globe && pb !== null && eph && Array.isArray(eph.t)) tHour = pb;
@@ -1481,7 +1484,7 @@ async function runAnalysis() {
       setPlayback(playback.i);
     }
     renderPlayback(); // now the scrubber is live for the new data
-    if (globeMode()) scheduleRaster();
+    scheduleRaster(); // re-light the map with the new window first step
     state.stale = false;
     state.hover = null;
 
