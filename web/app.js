@@ -216,6 +216,13 @@ function resizeMap() {
   scheduleRaster();
 }
 
+// widest span the terrain can fill: past the DEM footprint the raster is
+// clipped and the canvas shows black bars at the edges
+function spanLimit() {
+  const b = state.status?.dem?.bounds;
+  return b ? Math.min(b.right - b.left, b.top - b.bottom) : 608_000;
+}
+
 function clampView() {
   const b = state.status?.dem?.bounds;
   if (!b) return;
@@ -235,16 +242,10 @@ function scheduleRaster(delay = 140) {
 }
 
 let rasterToken = 0;
-function globeMode() {
-  const b = state.status?.dem?.bounds;
-  return b ? state.view.span > (b.right - b.left) * 1.05 : false;
-}
-
 async function fetchRaster() {
   const { W, H } = mapSize();
   if (W < 8 || H < 8) return;
   const d = dpr();
-  const globe = globeMode();
   // while playing, render small frames: the server keeps pace with the bar
   // and the step the map shows stays near the cursor. Pausing or scrubbing
   // returns to full resolution (the cache key changes with it).
@@ -254,17 +255,14 @@ async function fetchRaster() {
   const v = state.view;
   const eph = state.eph;
   // while playing, the CURRENT step lights the scene: raster mode re-shades the
-  // hillshade, globe mode also moves the day/night line to the step's time
+  // hillshade; the day/night line is a 3D-only feature
   // the bar position lights the scene: step 0 at rest, the scrub step
   // when seeking. The generic 315/35 studio light washed the terrain
   // out white; the real Sun is used as soon as we have it.
   const pb = eph && Array.isArray(eph.sun_az) && eph.sun_az.length
     ? Math.min(playback.i ?? 0, eph.sun_az.length - 1) : null;
-  // the selected date matters in globe mode: it sets the day/night line
-  let tHour = globe ? Math.round(parseUTC(state.params.start) / 36e5) : 0;
-  if (globe && pb !== null && eph && Array.isArray(eph.t)) tHour = pb;
-  let key = [globe ? "g" : "r", Math.round(v.cx), Math.round(v.cy),
-             Math.round(v.span), w, h, tHour].join(",");
+  let key = ["r", Math.round(v.cx), Math.round(v.cy),
+             Math.round(v.span), w, h].join(",");
   // Light the map from the GLOBAL sub-solar point, not the site's look
   // angles: azimuth is measured from each site's own north, so it swings
   // with the click and the shadows would rotate. The sub-point is the same
@@ -288,16 +286,9 @@ async function fetchRaster() {
   if (pb !== null && eph && lightAz !== null) {
     q.set("sun_az", lightAz.toFixed(1));
     q.set("sun_el", lightEl.toFixed(1));
-    if (globe && Array.isArray(eph.t)) q.set("t", eph.t[pb]);
-  } else if (globe) {
-    q.set("t", state.params.start);
-    if (eph && Array.isArray(eph.sun_az) && eph.sun_az.length) {
-      q.set("sun_az", eph.sun_az[0].toFixed(1));
-      q.set("sun_el", eph.sun_el[0].toFixed(1));
-    }
   }
   try {
-    const resp = await fetch((globe ? "/api/globe?" : "/api/raster?") + q);
+    const resp = await fetch("/api/raster?" + q);
     if (!resp.ok) throw new Error("raster " + resp.status);
     const bbox = (resp.headers.get("X-BBox") || "").split(",").map(Number);
     const sub = {
@@ -317,7 +308,7 @@ async function fetchRaster() {
       return;
     }
     if (state.raster.url) URL.revokeObjectURL(state.raster.url);
-    state.raster = { img, bbox, key, url, globe, sub };
+    state.raster = { img, bbox, key, url, globe: false, sub };
     // feed the 3D view, if it exists, the fresh body sub-points
     if (globe3d && sub.sun.length === 2 && sub.earth.length === 2) globe3d.update(sub.sun, sub.earth);
     drawMap();
@@ -344,8 +335,6 @@ function drawMap() {
     mctx.drawImage(r.img, p0.x, p0.y, p1.x - p0.x, p1.y - p0.y);
   }
 
-  // labelled Sun/Earth markers, only in the zoomed-out globe view
-  if (r.img && r.globe && r.sub) drawBodies(W, H, r.sub);
 
   // regions
   const s = pxPerM();
@@ -440,11 +429,7 @@ function drawMap() {
   mctx.font = "10.5px ui-monospace, \"JetBrains Mono\", Consolas, monospace";
   mctx.textAlign = "right";
   mctx.fillStyle = "rgba(123,135,149,0.7)";
-  if (state.raster.globe) {
-    mctx.fillText("southern hemisphere · global texture · zoom in for terrain detail", W - 12, H - 44);
-  } else {
-    mctx.fillText("0°E ↑   90°E →", W - 12, H - 44);
-  }
+  mctx.fillText("0°E ↑   90°E →", W - 12, H - 44);
 }
 
 function bodyMapXY(subLL) {
@@ -574,7 +559,7 @@ function applyWheelZoom() {
   if (dy === 0) return;
   const before = screenToWorld(pt.x, pt.y);
   const factor = Math.exp(dy * 0.0022);
-  state.view.span = clamp(state.view.span * factor, 600, 8_000_000);
+  state.view.span = clamp(state.view.span * factor, 600, spanLimit());
   const after = screenToWorld(pt.x, pt.y);
   state.view.cx += before.x - after.x;
   state.view.cy += before.y - after.y;
@@ -1575,7 +1560,7 @@ function fitRegion() {
   state.view.cx = (minX + maxX) / 2;
   state.view.cy = (minY + maxY) / 2;
   // 20 m/px data: below ~4 km the picture is pure upscaling
-  state.view.span = clamp(Math.max(spanForW, spanForH, 4000), 600, 8_000_000);
+  state.view.span = clamp(Math.max(spanForW, spanForH, 4000), 600, spanLimit());
   clampView();
   drawMap();
   scheduleRaster(0);
@@ -1599,7 +1584,7 @@ function fitMap() {
   if (!b) return;
   state.view.cx = (b.left + b.right) / 2;
   state.view.cy = (b.bottom + b.top) / 2;
-  state.view.span = (b.right - b.left) * 1.02;
+  state.view.span = spanLimit();
   clampView();
   drawMap();
   scheduleRaster(0);
@@ -1707,7 +1692,7 @@ function bindControls() {
     }
     state.view.cx = 0;
     state.view.cy = 0;
-    if (state.view.span > 8_000_000 || state.view.span < 608_000) state.view.span = 608_000;
+    if (state.view.span > spanLimit() || state.view.span < 608_000) state.view.span = 608_000;
     clampView();
     drawMap();
     scheduleRaster();
