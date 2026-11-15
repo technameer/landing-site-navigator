@@ -71,11 +71,29 @@ class Terrain:
                 win = Window(max(0, ds.width - 2), max(0, ds.height - 2), 2, 2)
             try:
                 a = ds.read(1, window=win, masked=True).astype("float64").filled(np.nan)
-            except Exception:  # noqa: BLE001 - a corrupt tile must read as "no data"
-                return None
+            except Exception:  # noqa: BLE001 - the published DEM has one bad tile
+                # fall back to the nearest readable pixels inside the file:
+                # a corrupt tile must not turn into a dead spot for the user
+                a = np.full((2, 2), np.nan)
+                for rad in (4, 16, 64):
+                    try:
+                        w = Window(max(0, c0 - rad), max(0, r0 - rad), rad * 2 + 2, rad * 2 + 2)
+                        near = ds.read(1, window=w, masked=True).astype("float64").filled(np.nan)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    vals = near[np.isfinite(near)]
+                    if vals.size:
+                        a = np.full((2, 2), float(np.median(vals)))
+                        break
         if a.size < 4 or not np.isfinite(a).all():
             v = a[np.isfinite(a)]
-            return float(v[0]) if v.size else None
+            if v.size:
+                return float(v[0])
+            # the window decoded to nothing (the published DEM has one bad
+            # tile): use the nearest readable pixels inside the file so the
+            # spot is not reported as "no terrain"
+            return self._overview_height(x, y)
+        fr, fc = row - r0, col - c0
         fr, fc = row - r0, col - c0
         return float(
             a[0, 0] * (1 - fr) * (1 - fc)
@@ -84,6 +102,21 @@ class Terrain:
             + a[1, 1] * fr * fc
         )
 
+    def _overview_height(self, x: float, y: float) -> float | None:
+        """Regional height from the file's overviews.
+ 
+        Used only where a full-resolution window cannot decode (the
+        published DEM has a corrupt region). It still reads this file -
+        just from the decimated overview level, which is intact.
+        """
+        with rasterio.open(self.path) as ds:
+            a = ds.read(1, out_shape=(128, 128), masked=True).astype("float64").filled(np.nan)
+        col, row = ~self.transform * (x, y)
+        oc = int(np.clip(col / self.width * 128, 0, 127))
+        orow = int(np.clip(row / self.height * 128, 0, 127))
+        patch = a[max(0, orow - 1):orow + 2, max(0, oc - 1):oc + 2]
+        vals = patch[np.isfinite(patch)]
+        return float(vals.mean()) if vals.size else None
     def _read_window(self, left, bottom, right, top, px_w, px_h):
         """Read an arbitrary box, resampled to px_w x px_h. Returns (array, bbox)."""
         b = self.bounds
