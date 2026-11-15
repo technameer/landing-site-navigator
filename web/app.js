@@ -576,11 +576,15 @@ mapCanvas.addEventListener(
     let d = e.deltaY;
     if (e.deltaMode === 1) d *= 16;        // lines (Firefox)
     else if (e.deltaMode === 2) d *= 100;  // pages
-    const discrete = e.deltaMode !== 0 || Math.abs(d) >= 50;
-    if (e.ctrlKey || discrete) {
-      // zoom: every delta counts, applied once per frame. A mouse notch is
-      // ~100; pinch deltas are tiny, so they are amplified to match.
-      wheelZAccum += discrete ? d : d * 4;
+    // Only a pinch (ctrl+wheel) or a real mouse wheel zooms. A mouse wheel
+    // reports line/page mode or a whole detent of 100/120 px; a trackpad
+    // swipe is fractional pixel deltas and must PAN, not zoom.
+    const isPinch = e.ctrlKey;
+    const isMouseWheel = e.deltaMode !== 0 ||
+      (Number.isInteger(d) && Math.abs(d) >= 100 && Math.abs(d) % 100 === 0);
+    if (isPinch || isMouseWheel) {
+      // pinch deltas are small, so they are amplified to feel like a notch
+      wheelZAccum += isPinch ? d * 4 : d;
       wheelZPt = pt;
       if (wheelRaf === null) wheelRaf = requestAnimationFrame(applyWheelZoom);
     } else {
