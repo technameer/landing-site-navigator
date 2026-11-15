@@ -39,6 +39,9 @@ const state = {
   observer: null,
   view: { cx: 0, cy: 0, span: 6000 },
   raster: { img: null, bbox: null, key: "", url: null, globe: false, sub: null },
+  // one coarse render of the whole footprint, drawn under every view so a
+  // zoom step is never left looking at empty background
+  baseRaster: { img: null, bbox: null, key: "" },
   skyline: null,
   eph: null,
   hover: null,
@@ -241,6 +244,58 @@ function scheduleRaster(delay = 140) {
   rasterTimer = setTimeout(fetchRaster, delay);
 }
 
+/* The current sun direction for map shading, from the bar step. */
+function currentLight() {
+  const eph = state.eph;
+  if (!eph || !Array.isArray(eph.sun_az) || !eph.sun_az.length) return null;
+  const pb = Math.min(playback.i ?? 0, eph.sun_az.length - 1);
+  const origin = eph.site || state.observer;
+  const sunLL = subPointFromAngles(eph.sun_el[pb], eph.sun_az[pb], origin.lat, origin.lon);
+  return {
+    az: ((sunLL[1] % 360) + 360) % 360, // longitudes arrive -180..180
+    el: -sunLL[0],                      // elevation seen from the pole
+  };
+}
+
+/* One coarse render of the whole DEM footprint, kept as a backdrop. */
+async function ensureBaseRaster(force = false) {
+  const b = state.status?.dem?.bounds;
+  if (!b) return;
+  const light = currentLight();
+  const key = [Math.round(b.left), Math.round(b.right),
+               light ? Math.round(light.az) + "," + Math.round(light.el) : "-1"].join(",");
+  if (!force && state.baseRaster.img && state.baseRaster.key === key) return;
+  const span = Math.max(b.right - b.left, b.top - b.bottom);
+  const q = new URLSearchParams({
+    cx: ((b.left + b.right) / 2).toFixed(1),
+    cy: ((b.bottom + b.top) / 2).toFixed(1),
+    span: span.toFixed(1), w: 1600, h: 1600,
+  });
+  if (light) {
+    q.set("sun_az", light.az.toFixed(1));
+    q.set("sun_el", light.el.toFixed(1));
+  }
+  try {
+    const resp = await fetch("/api/raster?" + q);
+    if (!resp.ok) throw new Error("base raster " + resp.status);
+    const bbox = (resp.headers.get("X-BBox") || "").split(",").map(Number);
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    await new Promise((res, rej) => {
+      img.onload = res;
+      img.onerror = () => rej(new Error("base image decode failed"));
+      img.src = url;
+    });
+    const prev = state.baseRaster.url;
+    state.baseRaster = { img, bbox, key, url };
+    if (prev) URL.revokeObjectURL(prev);
+    drawMap();
+  } catch (err) {
+    console.warn("base raster:", err.message);
+  }
+}
+
 let rasterToken = 0;
 async function fetchRaster() {
   const { W, H } = mapSize();
@@ -254,38 +309,20 @@ async function fetchRaster() {
   const h = clamp(Math.round((w * H) / W), 64, cap);
   const v = state.view;
   const eph = state.eph;
-  // while playing, the CURRENT step lights the scene: raster mode re-shades the
-  // hillshade; the day/night line is a 3D-only feature
-  // the bar position lights the scene: step 0 at rest, the scrub step
-  // when seeking. The generic 315/35 studio light washed the terrain
-  // out white; the real Sun is used as soon as we have it.
-  const pb = eph && Array.isArray(eph.sun_az) && eph.sun_az.length
-    ? Math.min(playback.i ?? 0, eph.sun_az.length - 1) : null;
+  const light = currentLight();
   let key = ["r", Math.round(v.cx), Math.round(v.cy),
              Math.round(v.span), w, h].join(",");
-  // Light the map from the GLOBAL sub-solar point, not the site's look
-  // angles: azimuth is measured from each site's own north, so it swings
-  // with the click and the shadows would rotate. The sub-point is the same
-  // for every observer, so the lighting follows only the bar.
-  let lightAz = null, lightEl = null;
-  if (pb !== null && eph) {
-    // origin = the site the ephemeris was computed for, never the live
-    // observer (which already points at the new click while eph is stale)
-    const origin = eph.site || state.observer;
-    const sunLL = subPointFromAngles(eph.sun_el[pb], eph.sun_az[pb], origin.lat, origin.lon);
-    lightAz = ((sunLL[1] % 360) + 360) % 360; // longitudes arrive -180..180
-    lightEl = -sunLL[0];       // elevation seen from the pole
-    key += "," + Math.round(lightAz) + "," + Math.round(lightEl);
-  }
+  if (light) key += "," + Math.round(light.az) + "," + Math.round(light.el);
+  ensureBaseRaster();
   if (key === state.raster.key) return;
 
   const token = ++rasterToken;
   const q = new URLSearchParams({
     cx: v.cx.toFixed(1), cy: v.cy.toFixed(1), span: v.span.toFixed(1), w, h,
   });
-  if (pb !== null && eph && lightAz !== null) {
-    q.set("sun_az", lightAz.toFixed(1));
-    q.set("sun_el", lightEl.toFixed(1));
+  if (light) {
+    q.set("sun_az", light.az.toFixed(1));
+    q.set("sun_el", light.el.toFixed(1));
   }
   try {
     const resp = await fetch("/api/raster?" + q);
@@ -325,7 +362,17 @@ function drawMap() {
   mctx.fillStyle = C.bg;
   mctx.fillRect(0, 0, W, H);
 
-  // terrain
+  // terrain: the coarse footprint render first, so a zoom step always
+  // lands on imagery instead of background
+  const base = state.baseRaster;
+  if (base.img && base.bbox && base.bbox.length === 4) {
+    const b0 = worldToScreen(base.bbox[0], base.bbox[3]);
+    const b1 = worldToScreen(base.bbox[2], base.bbox[1]);
+    mctx.imageSmoothingEnabled = true;
+    mctx.imageSmoothingQuality = "high";
+    mctx.drawImage(base.img, b0.x, b0.y, b1.x - b0.x, b1.y - b0.y);
+  }
+
   const r = state.raster;
   if (r.img && r.bbox && r.bbox.length === 4) {
     const p0 = worldToScreen(r.bbox[0], r.bbox[3]);
@@ -1519,6 +1566,9 @@ async function runAnalysis() {
       setPlayback(playback.i);
     }
     renderPlayback(); // now the scrubber is live for the new data
+    // keep the backdrop in step with the new window (not while playing:
+    // the detail frames cover the view and re-render every tick)
+    if (playback.timer === null) ensureBaseRaster(true);
     scheduleRaster(); // re-light the map with the new window first step
     state.stale = false;
     state.hover = null;
