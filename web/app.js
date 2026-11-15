@@ -11,21 +11,21 @@ const SUN_RADIUS = 0.266;         // degrees
 const D2R = Math.PI / 180;
 
 const C = {
-  bg: "#08090b",
-  panel: "#14171d",
-  grid: "#232936",
-  axis: "#4a5262",
-  text: "#dfe3ea",
-  muted: "#8d95a5",
-  dim: "#6f7889",
-  sun: "#f5b544",
-  earth: "#56c8d8",
-  roi: "#7f8fa6",
+  bg: "#06080b",
+  panel: "#0b0f14",
+  grid: "#1b222c",
+  axis: "#2a3441",
+  text: "#d6dce4",
+  muted: "#7b8795",
+  dim: "#7b8795",
+  sun: "#f2a93b",
+  earth: "#4cc9e0",
+  roi: "#5c6b7d",
   roiSel: "#e6eefb",
-  sky: "#6d7688",
-  good: "#58c08a",
-  warn: "#e0a33e",
-  bad: "#d9636b",
+  sky: "#5c6b7d",
+  good: "#5bd68a",
+  warn: "#f2a93b",
+  bad: "#ef5d5d",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -345,7 +345,7 @@ function drawMap() {
     mctx.beginPath();
     pts.forEach((p, i) => (i ? mctx.lineTo(p.x, p.y) : mctx.moveTo(p.x, p.y)));
     mctx.closePath();
-    mctx.fillStyle = selected ? "rgba(230,238,251,0.22)" : "rgba(127,143,166,0.13)";
+    mctx.fillStyle = selected ? "rgba(230,238,251,0.22)" : "rgba(92,107,125,0.16)";
     mctx.fill();
     mctx.lineWidth = selected ? 2 : 1.2;
     mctx.strokeStyle = selected ? C.roiSel : C.roi;
@@ -353,10 +353,10 @@ function drawMap() {
 
     if (Math.max(wpx, hpx) > 22) {
       const c0 = worldToScreen(roi.x, roi.y);
-      mctx.font = "11px ui-monospace, monospace";
+      mctx.font = "10.5px ui-monospace, \"JetBrains Mono\", Consolas, monospace";
       mctx.textAlign = "center";
       mctx.textBaseline = "middle";
-      mctx.fillStyle = selected ? "#ffffff" : "#c3ccda";
+      mctx.fillStyle = selected ? "#ffffff" : "#a9b4c2";
       mctx.fillText("R" + roi.index, c0.x, c0.y);
     }
   }
@@ -366,7 +366,7 @@ function drawMap() {
     const p = worldToScreen(state.observer.x, state.observer.y);
     if (state.busy) {
       mctx.save();
-      mctx.strokeStyle = "rgba(245,181,68,0.85)";
+      mctx.strokeStyle = "rgba(242,169,59,0.85)";
       mctx.setLineDash([4, 4]);
       mctx.lineWidth = 1.4;
       mctx.beginPath();
@@ -397,9 +397,9 @@ function drawMap() {
   drawScaleBar(W, H, s);
 
   // meridian hint: +y is the 0 degree meridian in this projection
-  mctx.font = "10.5px ui-monospace, monospace";
+  mctx.font = "10.5px ui-monospace, \"JetBrains Mono\", Consolas, monospace";
   mctx.textAlign = "right";
-  mctx.fillStyle = "rgba(160,170,186,0.55)";
+  mctx.fillStyle = "rgba(123,135,149,0.7)";
   if (state.raster.globe) {
     mctx.fillText("southern hemisphere · global texture · zoom in for terrain detail", W - 12, H - 44);
   } else {
@@ -447,10 +447,10 @@ function drawBodies(W, H, sub) {
     mctx.beginPath();
     mctx.arc(p.x, p.y, inside ? 12 : 8, 0, Math.PI * 2);
     mctx.stroke();
-    mctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
+    mctx.font = "500 11.5px ui-sans-serif, \"Inter\", \"Segoe UI\", system-ui, sans-serif";
     mctx.textAlign = "center";
     mctx.textBaseline = "bottom";
-    mctx.fillStyle = "rgba(8,9,11,0.9)"; // readability against the lit surface
+    mctx.fillStyle = "rgba(6,8,11,0.9)"; // readability against the lit surface
     mctx.fillText(b.name, p.x + 1, p.y - 14);
     mctx.fillStyle = b.color;
     mctx.fillText(b.name, p.x, p.y - 15);
@@ -468,14 +468,14 @@ function drawScaleBar(W, H, s) {
   const y = H - 22;
 
   mctx.save();
-  mctx.strokeStyle = "rgba(223,227,234,0.8)";
-  mctx.fillStyle = "rgba(223,227,234,0.8)";
+  mctx.strokeStyle = "rgba(214,220,228,0.75)";
+  mctx.fillStyle = "rgba(214,220,228,0.75)";
   mctx.lineWidth = 1.2;
   mctx.beginPath();
   mctx.moveTo(x, y - 5); mctx.lineTo(x, y);
   mctx.lineTo(x + px, y); mctx.lineTo(x + px, y - 5);
   mctx.stroke();
-  mctx.font = "11px ui-monospace, monospace";
+  mctx.font = "10.5px ui-monospace, \"JetBrains Mono\", Consolas, monospace";
   mctx.textAlign = "center";
   mctx.textBaseline = "alphabetic";
   const label = len >= 1000 ? len / 1000 + " km" : len + " m";
@@ -632,7 +632,7 @@ function drawSkyline() {
   const maxEl = Math.max(6, Math.ceil(sky.max_elev) + 2);
   const rOf = (el) => ((el - elMin) / (maxEl - elMin)) * R;
 
-  ctx.font = "10px ui-monospace, monospace";
+  ctx.font = "10px ui-monospace, \"JetBrains Mono\", Consolas, monospace";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
@@ -642,7 +642,7 @@ function drawSkyline() {
     if (r < 2) continue;
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = el === 0 ? "#3b4454" : C.grid;
+    ctx.strokeStyle = el === 0 ? "#2a3441" : C.grid;
     ctx.lineWidth = el === 0 ? 1.2 : 0.8;
     ctx.stroke();
     if (el % 10 === 0) {
@@ -660,7 +660,7 @@ function drawSkyline() {
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
-    ctx.strokeStyle = "#20262f";
+    ctx.strokeStyle = "#1b222c";
     ctx.lineWidth = 0.8;
     ctx.stroke();
     ctx.fillStyle = C.dim;
@@ -679,9 +679,9 @@ function drawSkyline() {
     else ctx.lineTo(x, y);
   }
   ctx.closePath();
-  ctx.fillStyle = "rgba(127,143,166,0.22)";
+  ctx.fillStyle = "rgba(92,107,125,0.2)";
   ctx.fill();
-  ctx.strokeStyle = "#aab6c8";
+  ctx.strokeStyle = "#a9b4c2";
   ctx.lineWidth = 1.3;
   ctx.stroke();
 
@@ -707,11 +707,11 @@ function drawSkyline() {
       ctx.arc(x, y, 4.5, 0, Math.PI * 2);
       ctx.fillStyle = colour;
       ctx.fill();
-      ctx.strokeStyle = "#0b0d11";
+      ctx.strokeStyle = "#06080b";
       ctx.lineWidth = 1;
       ctx.stroke();
       ctx.fillStyle = colour;
-      ctx.font = "10px ui-monospace, monospace";
+      ctx.font = "10px ui-monospace, \"JetBrains Mono\", Consolas, monospace";
       ctx.fillText(label, x, y - 10);
     }
   }
@@ -792,7 +792,7 @@ function renderNowcast() {
 
 function placeholder(ctx, W, H, text) {
   ctx.fillStyle = C.dim;
-  ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+  ctx.font = "11.5px ui-sans-serif, \"Inter\", \"Segoe UI\", system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(text, W / 2, H / 2);
@@ -825,7 +825,7 @@ function drawTimeline() {
   ctx.rect(padL, padT, plotW, plotH);
   ctx.clip();
 
-  for (const [flags, colour] of [[e.lit, "rgba(245,181,68,0.09)"], [e.earth_vis, "rgba(86,200,216,0.09)"]]) {
+  for (const [flags, colour] of [[e.lit, "rgba(242,169,59,0.10)"], [e.earth_vis, "rgba(76,201,224,0.10)"]]) {
     let start = null;
     for (let i = 0; i < n; i++) {
       if (flags[i] && start === null) start = i;
@@ -841,7 +841,7 @@ function drawTimeline() {
 
   // grid
   const step = niceStep(yMax - yMin, 5);
-  ctx.font = "10px ui-monospace, monospace";
+  ctx.font = "10px ui-monospace, \"JetBrains Mono\", Consolas, monospace";
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
   for (let v = Math.ceil(yMin / step) * step; v <= yMax; v += step) {
@@ -849,7 +849,7 @@ function drawTimeline() {
     ctx.beginPath();
     ctx.moveTo(padL, y);
     ctx.lineTo(padL + plotW, y);
-    ctx.strokeStyle = v === 0 ? "#3b4454" : C.grid;
+    ctx.strokeStyle = v === 0 ? "#2a3441" : C.grid;
     ctx.lineWidth = v === 0 ? 1.2 : 0.7;
     ctx.stroke();
     ctx.fillStyle = C.dim;
@@ -892,8 +892,8 @@ function drawTimeline() {
     ctx.restore();
   };
 
-  line(e.sun_sky, "rgba(245,181,68,0.45)", 1, [3, 3]);
-  line(e.earth_sky, "rgba(86,200,216,0.45)", 1, [3, 3]);
+  line(e.sun_sky, "rgba(242,169,59,0.5)", 1, [3, 3]);
+  line(e.earth_sky, "rgba(76,201,224,0.5)", 1, [3, 3]);
   line(e.sun_el, C.sun, 1.7);
   line(e.earth_el, C.earth, 1.7);
 
@@ -903,7 +903,7 @@ function drawTimeline() {
     ctx.beginPath();
     ctx.moveTo(x, padT);
     ctx.lineTo(x, padT + plotH);
-    ctx.strokeStyle = "rgba(223,227,234,0.45)";
+    ctx.strokeStyle = "rgba(214,220,228,0.4)";
     ctx.lineWidth = 1;
     ctx.stroke();
     for (const [arr, colour] of [[e.sun_el, C.sun], [e.earth_el, C.earth]]) {
