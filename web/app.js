@@ -271,7 +271,10 @@ async function fetchRaster() {
   // for every observer, so the lighting follows only the bar.
   let lightAz = null, lightEl = null;
   if (pb !== null && eph) {
-    const sunLL = subPointFromAngles(eph.sun_el[pb], eph.sun_az[pb]);
+    // origin = the site the ephemeris was computed for, never the live
+    // observer (which already points at the new click while eph is stale)
+    const origin = eph.site || state.observer;
+    const sunLL = subPointFromAngles(eph.sun_el[pb], eph.sun_az[pb], origin.lat, origin.lon);
     lightAz = ((sunLL[1] % 360) + 360) % 360; // longitudes arrive -180..180
     lightEl = -sunLL[0];       // elevation seen from the pole
     key += "," + Math.round(lightAz) + "," + Math.round(lightEl);
@@ -1071,10 +1074,15 @@ function renderEphemeris() {
    a FIXED observer, this matches exactly what the 2D charts show; for an
    observer far from the sub-point it is only an approximation of the body's
    true direction, but over a window it is consistent with the charts, which
-   is what the playback needs. */
-function subPointFromAngles(elDeg, azDeg) {
-  const lat1 = state.observer.lat * D2R;
-  const lon1 = state.observer.lon * D2R;
+   is what the playback needs.
+   The origin must be the observer the ANGLES belong to, not the live
+   state.observer: a click replaces the observer at once while state.eph keeps
+   the previous site's angles until the recompute lands, and mixing the two
+   rotated the sunlight. Pass eph.site here so the light depends only on the
+   ephemeris (and thus only on the bar step). */
+function subPointFromAngles(elDeg, azDeg, latDeg, lonDeg) {
+  const lat1 = (latDeg ?? state.observer.lat) * D2R;
+  const lon1 = (lonDeg ?? state.observer.lon) * D2R;
   const th = azDeg * D2R;
   const dl = (90 - elDeg) * D2R;
   const lat2 = Math.asin(Math.sin(lat1) * Math.cos(dl) + Math.cos(lat1) * Math.sin(dl) * Math.cos(th));
@@ -1129,9 +1137,10 @@ function setPlayback(i) {
   // move the 3D bodies only when they are on screen; the sub-point maths is
   // pure and costs nothing to skip
   if (state.view3d && globe3d) {
+    const origin = e.site || state.observer;
     globe3d.update(
-      subPointFromAngles(e.sun_el[playback.i], e.sun_az[playback.i]),
-      subPointFromAngles(e.earth_el[playback.i], e.earth_az[playback.i])
+      subPointFromAngles(e.sun_el[playback.i], e.sun_az[playback.i], origin.lat, origin.lon),
+      subPointFromAngles(e.earth_el[playback.i], e.earth_az[playback.i], origin.lat, origin.lon)
     );
   }
 }
