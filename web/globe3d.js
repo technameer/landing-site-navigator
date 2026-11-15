@@ -235,7 +235,7 @@ export class Globe3D {
 
   async refreshFromServer(iso) {
     // tiny throwaway render: only the headers matter
-    const q = new URLSearchParams({ cx: 0, cy: 0, span: 8_000_000, w: 64, h: 48 });
+    const q = new URLSearchParams({ cx: 0, cy: 0, span: 8_000_000, w: 64, h: 64 });
     if (iso) q.set("t", iso);
     const resp = await fetch("/api/globe?" + q);
     if (!resp.ok) throw new Error("globe " + resp.status);

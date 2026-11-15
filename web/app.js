@@ -201,8 +201,14 @@ function screenToWorld(sx, sy) {
 function resizeMap() {
   const rect = mapCanvas.parentElement.getBoundingClientRect();
   const d = dpr();
-  mapCanvas.width = Math.max(1, Math.round(rect.width * d));
-  mapCanvas.height = Math.max(1, Math.round(rect.height * d));
+  const w = Math.max(1, Math.round(rect.width * d));
+  const h = Math.max(1, Math.round(rect.height * d));
+  // assigning width/height clears the canvas, and a cleared canvas reads
+  // as a black frame until the next paint - only touch it when it changed
+  if (mapCanvas.width !== w || mapCanvas.height !== h) {
+    mapCanvas.width = w;
+    mapCanvas.height = h;
+  }
   mapCanvas.style.width = rect.width + "px";
   mapCanvas.style.height = rect.height + "px";
   clampView();
@@ -259,9 +265,16 @@ async function fetchRaster() {
   if (globe && pb !== null && eph && Array.isArray(eph.t)) tHour = pb;
   let key = [globe ? "g" : "r", Math.round(v.cx), Math.round(v.cy),
              Math.round(v.span), w, h, tHour].join(",");
+  // Light the map from the GLOBAL sub-solar point, not the site's look
+  // angles: azimuth is measured from each site's own north, so it swings
+  // with the click and the shadows would rotate. The sub-point is the same
+  // for every observer, so the lighting follows only the bar.
+  let lightAz = null, lightEl = null;
   if (pb !== null && eph) {
-    // fold the step's lighting into the key so playback frames never collide
-    key += "," + Math.round(eph.sun_az[pb]) + "," + Math.round(eph.sun_el[pb]);
+    const sunLL = subPointFromAngles(eph.sun_el[pb], eph.sun_az[pb]);
+    lightAz = ((sunLL[1] % 360) + 360) % 360; // longitudes arrive -180..180
+    lightEl = -sunLL[0];       // elevation seen from the pole
+    key += "," + Math.round(lightAz) + "," + Math.round(lightEl);
   }
   if (key === state.raster.key) return;
 
@@ -269,9 +282,9 @@ async function fetchRaster() {
   const q = new URLSearchParams({
     cx: v.cx.toFixed(1), cy: v.cy.toFixed(1), span: v.span.toFixed(1), w, h,
   });
-  if (pb !== null && eph) {
-    q.set("sun_az", eph.sun_az[pb]);
-    q.set("sun_el", eph.sun_el[pb]);
+  if (pb !== null && eph && lightAz !== null) {
+    q.set("sun_az", lightAz.toFixed(1));
+    q.set("sun_el", lightEl.toFixed(1));
     if (globe && Array.isArray(eph.t)) q.set("t", eph.t[pb]);
   } else if (globe) {
     q.set("t", state.params.start);
@@ -333,34 +346,56 @@ function drawMap() {
 
   // regions
   const s = pxPerM();
+  const labelSpots = [];
+  // the observer pin is painted on top of the regions, and the selected ROI
+  // sits under its tip: block the pin's footprint so no label hides beneath it
+  if (state.observer) {
+    const pp = worldToScreen(state.observer.x, state.observer.y);
+    for (let i = 0; i < 3; i++) labelSpots.push({ x: pp.x, y: pp.y - i * 11 });
+  }
   for (const roi of state.site?.rois || []) {
     const pts = roi.ring.map(([x, y]) => worldToScreen(x, y));
     const xs = pts.map((p) => p.x);
     const ys = pts.map((p) => p.y);
     const wpx = Math.max(...xs) - Math.min(...xs);
     const hpx = Math.max(...ys) - Math.min(...ys);
-    if (Math.max(wpx, hpx) < 3) continue;
-
+    const ext = Math.max(wpx, hpx);
     const selected = state.roi && roi.id === state.roi.id;
-    mctx.beginPath();
-    pts.forEach((p, i) => (i ? mctx.lineTo(p.x, p.y) : mctx.moveTo(p.x, p.y)));
-    mctx.closePath();
-    mctx.fillStyle = selected ? "rgba(230,238,251,0.22)" : "rgba(92,107,125,0.16)";
-    mctx.fill();
-    mctx.lineWidth = selected ? 2 : 1.2;
-    mctx.strokeStyle = selected ? C.roiSel : C.roi;
-    mctx.stroke();
+    const c0 = worldToScreen(roi.x, roi.y);
 
-    if (Math.max(wpx, hpx) > 22) {
-      const c0 = worldToScreen(roi.x, roi.y);
-      mctx.font = "10.5px ui-monospace, \"JetBrains Mono\", Consolas, monospace";
-      mctx.textAlign = "center";
-      mctx.textBaseline = "middle";
-      mctx.fillStyle = selected ? "#ffffff" : "#a9b4c2";
-      mctx.fillText("R" + roi.index, c0.x, c0.y);
+    if (ext >= 1.5) {
+      mctx.beginPath();
+      pts.forEach((p, i) => (i ? mctx.lineTo(p.x, p.y) : mctx.moveTo(p.x, p.y)));
+      mctx.closePath();
+      mctx.fillStyle = selected ? "rgba(230,238,251,0.22)" : "rgba(92,107,125,0.16)";
+      mctx.fill();
+      mctx.lineWidth = selected ? 2 : 1.2;
+      mctx.strokeStyle = selected ? C.roiSel : C.roi;
+      mctx.stroke();
+    } else {
+      // far out the polygon is sub-pixel: mark the centre so the region
+      // stays apparent instead of vanishing
+      mctx.beginPath();
+      mctx.arc(c0.x, c0.y, 2.5, 0, Math.PI * 2);
+      mctx.fillStyle = selected ? C.roiSel : C.roi;
+      mctx.fill();
     }
-  }
 
+    // the label scales with the region on screen, with a floor so it never
+    // vanishes; overlapping labels are nudged apart to stay readable
+    const fs = clamp(ext * 0.55, 8, 13);
+    let lx = c0.x;
+    let ly = c0.y;
+    for (let n = 0; n < 16 && labelSpots.some((q) => Math.abs(q.x - lx) < 15 && Math.abs(q.y - ly) < 11); n++) {
+      ly -= 11;
+    }
+    labelSpots.push({ x: lx, y: ly });
+    mctx.font = fs.toFixed(1) + 'px ui-monospace, "JetBrains Mono", Consolas, monospace';
+    mctx.textAlign = "center";
+    mctx.textBaseline = "middle";
+    mctx.fillStyle = selected ? "#ffffff" : "#a9b4c2";
+    mctx.fillText("R" + roi.index, lx, ly);
+  }
   // observer
   if (state.observer) {
     const p = worldToScreen(state.observer.x, state.observer.y);
@@ -374,21 +409,23 @@ function drawMap() {
       mctx.stroke();
       mctx.restore();
     }
+    // a location pin whose tip sits exactly on the observer point
+    const bob = 15;
     mctx.save();
+    mctx.beginPath();
+    mctx.moveTo(p.x, p.y);
+    mctx.bezierCurveTo(p.x - 1.5, p.y - 4, p.x - 7, p.y - 8, p.x - 7, p.y - bob);
+    mctx.arc(p.x, p.y - bob, 7, Math.PI, 0, false);
+    mctx.bezierCurveTo(p.x + 7, p.y - 8, p.x + 1.5, p.y - 4, p.x, p.y);
+    mctx.closePath();
+    mctx.fillStyle = "rgba(8,9,11,0.78)";
+    mctx.fill();
     mctx.strokeStyle = "#ffffff";
     mctx.lineWidth = 1.5;
-    mctx.beginPath();
-    mctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
     mctx.stroke();
     mctx.beginPath();
-    mctx.moveTo(p.x - 12, p.y); mctx.lineTo(p.x - 7, p.y);
-    mctx.moveTo(p.x + 7, p.y);  mctx.lineTo(p.x + 12, p.y);
-    mctx.moveTo(p.x, p.y - 12); mctx.lineTo(p.x, p.y - 7);
-    mctx.moveTo(p.x, p.y + 7);  mctx.lineTo(p.x, p.y + 12);
-    mctx.stroke();
-    mctx.fillStyle = "rgba(255,255,255,0.9)";
-    mctx.beginPath();
-    mctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
+    mctx.arc(p.x, p.y - bob, 2.4, 0, Math.PI * 2);
+    mctx.fillStyle = "#ffffff";
     mctx.fill();
     mctx.restore();
   }
@@ -1873,6 +1910,16 @@ async function init() {
       : "");
 
   resizeMap();
+  // the map panel also changes size when the sidebar loads or the help
+  // modal opens - not just when the window resizes. Watch the element
+  // itself, coalesced to one rAF, so the canvas never keeps a stale size
+  // (which showed as persistent black bars).
+  if (typeof ResizeObserver !== "undefined") {
+    let raf = null;
+    new ResizeObserver(() => {
+      if (raf === null) raf = requestAnimationFrame(() => { raf = null; resizeMap(); });
+    }).observe(mapCanvas.parentElement);
+  }
   fillSiteSelect();
 
   if (!state.sites.length) {
