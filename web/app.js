@@ -46,8 +46,13 @@ const state = {
   stale: true,
   view3d: false,
   scenarios: [],
+  // active step of the scrubber/playback, or null when not playing;
+  // timer holds the setInterval id while the play button runs
+  playback: { i: null, timer: null, fps: 6, speed: 1, mapTimer: null, mapInterval: null },
   params: { start: "2026-11-14T00:00:00", hours: 24, step_min: 10, mast: 2, maxdist: 12000 },
 };
+// short alias: every playback function below reads and writes this one
+const playback = state.playback;
 
 const dpr = () => Math.min(2.5, window.devicePixelRatio || 1);
 
@@ -141,6 +146,7 @@ function beginBusy(label) {
   }
   const save = $("#save-scenario");
   if (save) save.disabled = true;
+  // playback timers keep running across a recompute; the step is preserved
   for (const sel of BUSY_CARDS) {
     const card = $(sel);
     card.classList.add("is-busy");
@@ -233,22 +239,39 @@ async function fetchRaster() {
   if (W < 8 || H < 8) return;
   const d = dpr();
   const globe = globeMode();
-  const w = clamp(Math.round(W * d), 64, 2048);
-  const h = clamp(Math.round((w * H) / W), 64, 2048);
+  // while playing, render small frames: the server keeps pace with the bar
+  // and the step the map shows stays near the cursor. Pausing or scrubbing
+  // returns to full resolution (the cache key changes with it).
+  const cap = playback.timer !== null ? 640 : 2048;
+  const w = clamp(Math.round(W * d), 64, cap);
+  const h = clamp(Math.round((w * H) / W), 64, cap);
   const v = state.view;
+  const eph = state.eph;
+  // while playing, the CURRENT step lights the scene: raster mode re-shades the
+  // hillshade, globe mode also moves the day/night line to the step's time
+  const pb = playback.i !== null && eph && Array.isArray(eph.sun_az) && playback.i < eph.sun_az.length
+    ? playback.i : null;
   // the selected date matters in globe mode: it sets the day/night line
-  const tHour = globe ? Math.round(parseUTC(state.params.start) / 36e5) : 0;
-  const key = [globe ? "g" : "r", Math.round(v.cx), Math.round(v.cy),
-               Math.round(v.span), w, h, tHour].join(",");
+  let tHour = globe ? Math.round(parseUTC(state.params.start) / 36e5) : 0;
+  if (globe && pb !== null && eph && Array.isArray(eph.t)) tHour = pb;
+  let key = [globe ? "g" : "r", Math.round(v.cx), Math.round(v.cy),
+             Math.round(v.span), w, h, tHour].join(",");
+  if (pb !== null && eph) {
+    // fold the step's lighting into the key so playback frames never collide
+    key += "," + Math.round(eph.sun_az[pb]) + "," + Math.round(eph.sun_el[pb]);
+  }
   if (key === state.raster.key) return;
 
   const token = ++rasterToken;
   const q = new URLSearchParams({
     cx: v.cx.toFixed(1), cy: v.cy.toFixed(1), span: v.span.toFixed(1), w, h,
   });
-  if (globe) {
+  if (pb !== null && eph) {
+    q.set("sun_az", eph.sun_az[pb]);
+    q.set("sun_el", eph.sun_el[pb]);
+    if (globe && Array.isArray(eph.t)) q.set("t", eph.t[pb]);
+  } else if (globe) {
     q.set("t", state.params.start);
-    const eph = state.eph;
     if (eph && Array.isArray(eph.sun_az) && eph.sun_az.length) {
       q.set("sun_az", eph.sun_az[0].toFixed(1));
       q.set("sun_el", eph.sun_el[0].toFixed(1));
@@ -492,22 +515,55 @@ window.addEventListener("mouseup", (e) => {
   }
 });
 
+/* Trackpads: two-finger scroll PANS (content follows the fingers, like
+   every map app); a pinch (ctrl+wheel) or a real mouse wheel ZOOMS.
+   Pixel-mode deltas with small steps are the trackpad signature; line/page
+   modes and big jumps are a mouse wheel. */
+let wheelZAccum = 0;
+let wheelZPt = null;
+let wheelRaf = null;
+function applyWheelZoom() {
+  wheelRaf = null;
+  if (!wheelZPt) return;
+  const pt = wheelZPt;
+  const dy = clamp(wheelZAccum, -120, 120); // cap per frame; pinch deltas add up
+  wheelZAccum = 0;
+  if (dy === 0) return;
+  const before = screenToWorld(pt.x, pt.y);
+  const factor = Math.exp(dy * 0.0022);
+  state.view.span = clamp(state.view.span * factor, 600, 8_000_000);
+  const after = screenToWorld(pt.x, pt.y);
+  state.view.cx += before.x - after.x;
+  state.view.cy += before.y - after.y;
+  clampView();
+  drawMap();
+  scheduleRaster();
+}
 mapCanvas.addEventListener(
   "wheel",
   (e) => {
     e.preventDefault();
     const rect = mapCanvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    const before = screenToWorld(mx, my);
-    const factor = Math.exp(e.deltaY * 0.0012);
-    state.view.span = clamp(state.view.span * factor, 600, 8_000_000);
-    const after = screenToWorld(mx, my);
-    state.view.cx += before.x - after.x;
-    state.view.cy += before.y - after.y;
-    clampView();
-    drawMap();
-    scheduleRaster();
+    const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    let d = e.deltaY;
+    if (e.deltaMode === 1) d *= 16;        // lines (Firefox)
+    else if (e.deltaMode === 2) d *= 100;  // pages
+    const discrete = e.deltaMode !== 0 || Math.abs(d) >= 50;
+    if (e.ctrlKey || discrete) {
+      // zoom: every delta counts, applied once per frame. A mouse notch is
+      // ~100; pinch deltas are tiny, so they are amplified to match.
+      wheelZAccum += discrete ? d : d * 4;
+      wheelZPt = pt;
+      if (wheelRaf === null) wheelRaf = requestAnimationFrame(applyWheelZoom);
+    } else {
+      // two-finger scroll: pan
+      const s = pxPerM();
+      state.view.cx -= e.deltaX / s;
+      state.view.cy += e.deltaY / s;
+      clampView();
+      drawMap();
+      scheduleRaster();
+    }
   },
   { passive: false }
 );
@@ -662,7 +718,9 @@ function currentAngles() {
   const e = state.eph;
   if (!e || !e.t) return null;
   let i = 0;
-  if (state.hover !== null && state.hover < e.t.length) i = state.hover;
+  // while scrubbing or playing, the skyline markers follow the playback step
+  if (playback.i !== null && playback.i < e.t.length) i = playback.i;
+  else if (state.hover !== null && state.hover < e.t.length) i = state.hover;
   return {
     sun: { el: e.sun_el[i], az: e.sun_az[i] },
     earth: { el: e.earth_el[i], az: e.earth_az[i] },
@@ -852,6 +910,24 @@ function drawTimeline() {
       ctx.fill();
     }
   }
+
+  // playback cursor: a vertical line at the active step, with a dot where the
+  // Sun sits. With playback.i null nothing is drawn, exactly as before.
+  if (playback.i !== null && playback.i < n) {
+    const x = xOf(playback.i);
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, padT + plotH);
+    ctx.strokeStyle = C.sun;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    for (const [arr, colour] of [[e.sun_el, C.sun], [e.earth_el, C.earth]]) {
+      ctx.beginPath();
+      ctx.arc(x, yOf(arr[playback.i]), 3, 0, Math.PI * 2);
+      ctx.fillStyle = colour;
+      ctx.fill();
+    }
+  }
 }
 
 /* --------------------------------------------------------------- readouts */
@@ -943,6 +1019,145 @@ function renderEphemeris() {
   $("#transitions").innerHTML = rows.join("") ||
     `<div class="tr"><span>No horizon crossings here. Near the poles the Sun can stay up ` +
     `for weeks — try a date near an equinox (March or September) to watch it cross.</span></div>`;
+}
+
+
+/* ------------------------------------------------------------- playback */
+
+/* Sub-point for a body at one ephemeris step, from the observer-relative look
+   angles in state.eph: starting at the observer's lat/lon, walk the great
+   circle along the body's azimuth for 90 - elevation degrees (the same
+   geo.destination formula the server uses). Because the look angles come from
+   a FIXED observer, this matches exactly what the 2D charts show; for an
+   observer far from the sub-point it is only an approximation of the body's
+   true direction, but over a window it is consistent with the charts, which
+   is what the playback needs. */
+function subPointFromAngles(elDeg, azDeg) {
+  const lat1 = state.observer.lat * D2R;
+  const lon1 = state.observer.lon * D2R;
+  const th = azDeg * D2R;
+  const dl = (90 - elDeg) * D2R;
+  const lat2 = Math.asin(Math.sin(lat1) * Math.cos(dl) + Math.cos(lat1) * Math.sin(dl) * Math.cos(th));
+  const lon2 = lon1 + Math.atan2(
+    Math.sin(th) * Math.sin(dl) * Math.cos(lat1),
+    Math.cos(dl) - Math.sin(lat1) * Math.sin(lat2)
+  );
+  return [lat2 / D2R, lon2 / D2R];
+}
+
+function renderPlayback() {
+  const btn = $("#play");
+  const slider = $("#scrub");
+  const out = $("#scrub-readout");
+  const e = state.eph;
+  const usable = e && e.t && e.t.length >= 2;
+  btn.disabled = slider.disabled = !usable;
+  if (!usable) {
+    slider.max = 0;
+    slider.value = 0;
+    out.textContent = "—";
+    return;
+  }
+  slider.max = e.t.length - 1;
+  slider.value = playback.i ?? 0;
+  if (playback.i === null) {
+    out.textContent = "—";
+    return;
+  }
+  const i = playback.i;
+  const deg = (v) => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(1) + "°";
+  out.textContent =
+    `${fmtTime(e.t[i], true)} · Sun ${deg(e.sun_el[i])} ${e.lit[i] ? "up" : "hidden"}` +
+    ` · Earth ${deg(e.earth_el[i])} ${e.earth_vis[i] ? "visible" : "hidden"}`;
+}
+
+function setPlayback(i) {
+  const e = state.eph;
+  if (!e || !e.t || !e.t.length) return;
+  playback.i = clamp(Math.round(i), 0, e.t.length - 1);
+  drawTimeline();  // re-render with the cursor line at the new step
+  drawSkyline();   // skyline markers follow the same step via currentAngles()
+  renderPlayback();
+  // re-light the map for the new step. While PLAYING, the map interval in
+  // startPlaybackTimer() owns this (a debounce here would be reset by every
+  // tick and starve - the map would only move when paused). While scrubbing
+  // a paused bar, a short debounce bundles fast drags.
+  if (playback.timer === null) {
+    clearTimeout(playback.mapTimer);
+    playback.mapTimer = setTimeout(scheduleRaster, 200);
+  }
+  // move the 3D bodies only when they are on screen; the sub-point maths is
+  // pure and costs nothing to skip
+  if (state.view3d && globe3d) {
+    globe3d.update(
+      subPointFromAngles(e.sun_el[playback.i], e.sun_az[playback.i]),
+      subPointFromAngles(e.earth_el[playback.i], e.earth_az[playback.i])
+    );
+  }
+}
+
+function stopPlaybackTimer() {
+  if (playback.timer === null) return;
+  clearInterval(playback.timer);
+  playback.timer = null;
+  if (playback.mapInterval !== null) {
+    clearInterval(playback.mapInterval);
+    playback.mapInterval = null;
+  }
+  $("#play").textContent = "▶ Play";
+  // render the step we paused on right away, not 200 ms from now
+  scheduleRaster();
+}
+
+/* One code path for (re)arming the tick interval, so the speed control can
+   restart it mid-run and the play button can start it fresh. */
+function startPlaybackTimer() {
+  if (playback.timer !== null) clearInterval(playback.timer);
+  $("#play").textContent = "⏸ Pause";
+  playback.timer = setInterval(() => {
+    const n = state.eph.t.length;
+    setPlayback(playback.i >= n - 1 ? 0 : playback.i + 1); // loop at the end
+  }, 1000 / (playback.fps * playback.speed));
+  // the map is re-rendered server-side, so it follows at its own slower
+  // cadence while the charts and the 3D bodies run at full frame rate
+  if (playback.mapInterval === null) {
+    playback.mapInterval = setInterval(() => scheduleRaster(), 400);
+  }
+}
+
+function togglePlayback() {
+  if (playback.timer !== null) {
+    stopPlaybackTimer(); // pausing keeps playback.i so the cursor stays put
+    return;
+  }
+  const e = state.eph;
+  if (!e || !e.t || e.t.length < 2) return;
+  if (playback.i === null) playback.i = 0;
+  startPlaybackTimer();
+}
+
+/* Leave playback entirely: stop the timer, clear the cursor, redraw clean. */
+function stopPlayback() {
+  stopPlaybackTimer();
+  clearTimeout(playback.mapTimer);
+  playback.i = null;
+  drawTimeline();
+  drawSkyline();
+  renderPlayback();
+}
+
+function bindPlaybackUI() {
+  $("#play").addEventListener("click", togglePlayback);
+  $("#playback-speed").addEventListener("change", (e) => {
+    playback.speed = Number(e.target.value) || 1;
+    // if the timer is running, re-arm it so the new speed applies immediately
+    if (playback.timer !== null) startPlaybackTimer();
+  });
+  $("#scrub").addEventListener("input", (e) => {
+    stopPlaybackTimer(); // dragging the scrubber pauses, but keeps the step
+    setPlayback(Number(e.target.value));
+  });
+  renderPlayback();
 }
 
 /* ------------------------------------------------------------- scenarios */
@@ -1252,8 +1467,20 @@ async function runAnalysis() {
     ]);
     if (token !== runToken) return;
 
+    // keep playback across the recompute: carry the bar position over as
+    // a fraction of the window, so a new site or date continues the
+    // animation seamlessly instead of resetting to 00:00
+    const prev = state.eph;
+    const frac = playback.i !== null && prev && prev.t && prev.t.length > 1
+      ? playback.i / (prev.t.length - 1)
+      : null;
     state.skyline = sky;
     state.eph = eph;
+    if (frac !== null) {
+      playback.i = clamp(Math.round(frac * (eph.t.length - 1)), 0, eph.t.length - 1);
+      setPlayback(playback.i);
+    }
+    renderPlayback(); // now the scrubber is live for the new data
     if (globeMode()) scheduleRaster();
     state.stale = false;
     state.hover = null;
@@ -1406,6 +1633,7 @@ function bindControls() {
 
   $("#fit-region").addEventListener("click", fitRegion);
   $("#fit-map").addEventListener("click", fitMap);
+  bindPlaybackUI();
 
   $("#view-3d").addEventListener("click", () => {
     state.view3d = !state.view3d;
@@ -1470,7 +1698,13 @@ function applyViewMode() {
   map2d.hidden = on;
   map3d.hidden = !on;
   $("#view-3d").classList.toggle("active", on);
-  if (on) { globe3d.show(); globe3d.recenter(); } else { globe3d && globe3d.hide(); }
+  if (on) {
+    globe3d.show();
+    globe3d.recenter();
+    // while playback is active, put the bodies on the current step instead of
+    // the server sub-points that came with the last globe raster
+    if (playback.i !== null) setPlayback(playback.i);
+  } else { globe3d && globe3d.hide(); }
   // controls that belong to the 2D map only
   $("#fit-region").disabled = on;
   $("#fit-map").disabled = on;

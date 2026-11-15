@@ -623,6 +623,37 @@ aside {
 }
 
 /* --------------------------------------------------------------- scenarios */
+/* Full-width bottom bar of the Sun & Earth card, separated from the content
+   above the same way .stats and .note are. */
+/* two rows: controls + readout on top, the scrubber full width below */
+.playbar {
+  width: 100%;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.playbar-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.playbar #playback-speed { height: 28px; font-size: 12px; flex: none; }
+.playbar #scrub-readout {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: normal;   /* full text, never truncated */
+}
+.playbar input[type="range"] {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin-top: 2px;
+  height: 28px;         /* taller touch target */
+  accent-color: var(--sun);
+}
 .compare-actions { display: flex; gap: 6px; margin-bottom: 9px; }
 .mini-btn { height: 27px; padding: 0 10px; font-size: 11.5px; }
 .mini-btn:disabled { opacity: .45; cursor: default; }

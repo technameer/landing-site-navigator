@@ -78,7 +78,9 @@ sunlight, the cyan background is an Earth link.
 
 The numbers below the chart are the summary: fraction of time sunlit, fraction
 of time the Earth is visible, the longest continuous sunlit run, and every
-horizon crossing in the window.
+horizon crossing in the window. Press **▶ Play** (or drag the scrubber) to
+animate the window: the charts grow a cursor and the 3D bodies swing around the
+Moon in step.
 
 ### Reading the Site card
 

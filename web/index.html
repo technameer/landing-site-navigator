@@ -146,6 +146,20 @@
       <div class="stats" id="eph-stats"></div>
       <div id="transitions" class="transitions"></div>
       <p class="note muted" id="last-updated" role="status" aria-live="polite"></p>
+      <div class="playbar">
+        <div class="playbar-row">
+          <button id="play" class="mini-btn" title="Animate Sun and Earth over the selected window">▶ Play</button>
+          <select id="playback-speed" title="Playback speed" aria-label="Playback speed">
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1×</option>
+            <option value="2">2×</option>
+            <option value="4">4×</option>
+            <option value="8">8×</option>
+          </select>
+        </div>
+        <input id="scrub" type="range" min="0" max="100" value="0" step="1" aria-label="Time scrubber">
+          <span id="scrub-readout" class="mono">—</span>
+      </div>
     </div>
 
     <div class="card card-note">
